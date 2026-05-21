@@ -14,14 +14,14 @@ type SnellOption struct {
 	Psk      string          `inbound:"psk"`
 	Version  int             `inbound:"version,omitempty"`
 	UDP      bool            `inbound:"udp,omitempty"`
-	ObfsOpts snellObfsOption `inbound:"obfs-opts,omitempty"`
+	ObfsOpts SnellObfsOption `inbound:"obfs-opts,omitempty"`
 }
 
 func (o SnellOption) Equal(config C.InboundConfig) bool {
 	return optionToString(o) == optionToString(config)
 }
 
-type snellObfsOption struct {
+type SnellObfsOption struct {
 	Mode string `obfs:"mode,omitempty"`
 	Host string `obfs:"host,omitempty"`
 }
