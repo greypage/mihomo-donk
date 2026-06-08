@@ -94,43 +94,4 @@ jobs:
           name: core-${{ matrix.output }}
           path: build_output/clash-linux-${{ matrix.output }}.tar.gz
 
-  Publish:
-    runs-on: ubuntu-latest
-    needs: Build
-    if: always()
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: core
-          fetch-depth: 0
 
-      - name: Download All Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./downloaded-artifacts
-
-      - name: Organize Artifacts and Commit
-        run: |
-          mkdir -p ./dev/meta
-          rm -rf ./dev/meta/*
-
-          for artifact_dir in ./downloaded-artifacts/core-*/; do
-            if [ -d "$artifact_dir" ] && [ -n "$(ls -A "$artifact_dir")" ]; then
-              cp -rf "$artifact_dir"/* ./dev/meta/
-            fi
-          done
-
-          echo "$(git rev-parse HEAD)" > ./dev/core_version
-
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-
-          git add ./dev/meta ./dev/core_version
-
-          if ! git diff --staged --quiet; then
-            git commit -m "Auto update: core $(git rev-parse --short HEAD)"
-            git push origin core --force
-          else
-            echo "No changes to commit."
-          fi
