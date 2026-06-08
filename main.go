@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/metacubex/mihomo/constant"
+	_ "github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
 )
