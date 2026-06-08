@@ -105,8 +105,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateGeneral(cfg.General, true)
 	updateNTP(cfg.NTP)
 	updateDNS(cfg.DNS, cfg.General.IPv6)
-	//updateListeners(cfg.General, cfg.Listeners, force)
-	//updateTun(cfg.General) // tun should not care "force"
+	updateListeners(cfg.General, cfg.Listeners, force)
+	updateTun(cfg.General) // tun should not care "force"
 	updateIPTables(cfg)
 	updateTunnels(cfg.Tunnels)
 

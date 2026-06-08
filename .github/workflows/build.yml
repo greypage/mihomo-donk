@@ -67,6 +67,11 @@ jobs:
           sudo update-ca-certificates
           cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
 
+      - name: Fix Listeners
+        run: |
+          sed -i 's|//updateListeners|updateListeners|g' hub/executor/executor.go
+          sed -i 's|//updateTun|updateTun|g' hub/executor/executor.go
+
       - name: Build Core
         env:
           GOOS: ${{ matrix.goos }}
