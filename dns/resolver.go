@@ -451,6 +451,7 @@ type Config struct {
 	FallbackIPFilter     []C.IpMatcher
 	FallbackDomainFilter []C.DomainMatcher
 	Policy               []Policy
+	ProxyServerPolicy    []Policy
 	CacheAlgorithm       string
 	CacheMaxSize         int
 }
@@ -529,11 +530,37 @@ func NewResolver(config Config) (rs Resolvers) {
 	rs.Resolver = r
 
 	if len(config.ProxyServer) != 0 {
+		proxyPolicy := make([]dnsPolicy, 0)
+		if len(config.ProxyServerPolicy) != 0 {
+			var triePolicy *trie.DomainTrie[[]dnsClient]
+			_ip := func(policy dnsPolicy) {
+				if triePolicy != nil {
+					triePolicy.Optimize()
+					proxyPolicy = append(proxyPolicy, domainTriePolicy{triePolicy})
+					triePolicy = nil
+				}
+				if policy != nil {
+					proxyPolicy = append(proxyPolicy, policy)
+				}
+			}
+			for _, policy := range config.ProxyServerPolicy {
+				if policy.Matcher != nil {
+					_ip(domainMatcherPolicy{matcher: policy.Matcher, dnsClients: cacheTransform(policy.NameServers)})
+				} else {
+					if triePolicy == nil {
+						triePolicy = trie.New[[]dnsClient]()
+					}
+					_ = triePolicy.Insert(policy.Domain, cacheTransform(policy.NameServers))
+				}
+			}
+			_ip(nil)
+		}
 		rs.ProxyResolver = &Resolver{
 			ipv6:        config.IPv6,
 			main:        cacheTransform(config.ProxyServer),
 			cache:       config.newCache(),
 			ipv6Timeout: time.Duration(config.IPv6Timeout) * time.Millisecond,
+			policy:      proxyPolicy,
 		}
 	}
 
