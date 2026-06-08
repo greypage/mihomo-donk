@@ -75,12 +75,15 @@ jobs:
           GOARM: ${{ matrix.goarm }}
           GOMIPS: ${{ matrix.gomips }}
           CGO_ENABLED: 0
+          GONOSUMCHECK: '*'
+          GONOSUMDB: '*'
+          GOFLAGS: -mod=mod
         run: |
           set -e
           VERSION="$(git rev-parse --short HEAD)"
           BUILDTIME="$(date -u)"
           mkdir -p ./bin
-          go build -tags with_gvisor -trimpath \
+          go build -v -tags with_gvisor -trimpath \
             -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid=" \
             -o ./bin/clash
           chmod +x ./bin/clash
