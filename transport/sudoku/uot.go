@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,8 +16,16 @@ import (
 )
 
 const (
-	maxUoTPayload = 64 * 1024
+	UoTMagicByte  byte = 0xEE
+	uotVersion         = 0x01
+	maxUoTPayload      = 64 * 1024
 )
+
+// WritePreface writes the UDP-over-TCP marker and version.
+func WritePreface(w io.Writer) error {
+	_, err := w.Write([]byte{UoTMagicByte, uotVersion})
+	return err
+}
 
 // WriteDatagram sends a single UDP datagram frame over a reliable stream.
 func WriteDatagram(w io.Writer, addr string, payload []byte) error {
@@ -36,15 +45,43 @@ func WriteDatagram(w io.Writer, addr string, payload []byte) error {
 	binary.BigEndian.PutUint16(header[:2], uint16(len(addrBuf)))
 	binary.BigEndian.PutUint16(header[2:], uint16(len(payload)))
 
-	return writeAllChunks(w, header[:], addrBuf, payload)
+	if _, err := w.Write(header[:]); err != nil {
+		return err
+	}
+	if _, err := w.Write(addrBuf); err != nil {
+		return err
+	}
+	_, err = w.Write(payload)
+	return err
 }
 
 // ReadDatagram parses a single UDP datagram frame from the reliable stream.
 func ReadDatagram(r io.Reader) (string, []byte, error) {
-	addr, payloadLen, err := readDatagramHeaderAndAddress(r)
-	if err != nil {
+	var header [4]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return "", nil, err
 	}
+
+	addrLen := int(binary.BigEndian.Uint16(header[:2]))
+	payloadLen := int(binary.BigEndian.Uint16(header[2:]))
+
+	if addrLen <= 0 || addrLen > maxUoTPayload {
+		return "", nil, fmt.Errorf("invalid address length: %d", addrLen)
+	}
+	if payloadLen < 0 || payloadLen > maxUoTPayload {
+		return "", nil, fmt.Errorf("invalid payload length: %d", payloadLen)
+	}
+
+	addrBuf := make([]byte, addrLen)
+	if _, err := io.ReadFull(r, addrBuf); err != nil {
+		return "", nil, err
+	}
+
+	addr, err := DecodeAddress(bytes.NewReader(addrBuf))
+	if err != nil {
+		return "", nil, fmt.Errorf("decode address: %w", err)
+	}
+
 	payload := make([]byte, payloadLen)
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return "", nil, err
@@ -65,29 +102,26 @@ func NewUoTPacketConn(conn net.Conn) *UoTPacketConn {
 
 func (c *UoTPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	for {
-		addrStr, payloadLen, err := readDatagramHeaderAndAddress(c.conn)
+		addrStr, payload, err := ReadDatagram(c.conn)
 		if err != nil {
 			return 0, nil, err
 		}
 
-		udpAddr, err := parseDatagramUDPAddr(addrStr)
-		if payloadLen > len(p) {
-			if discardErr := discardBytes(c.conn, payloadLen); discardErr != nil {
-				return 0, nil, discardErr
-			}
+		if len(payload) > len(p) {
 			return 0, nil, io.ErrShortBuffer
 		}
-		if err != nil {
-			if discardErr := discardBytes(c.conn, payloadLen); discardErr != nil {
-				return 0, nil, discardErr
-			}
+
+		host, port, _ := net.SplitHostPort(addrStr)
+		portInt, _ := strconv.ParseUint(port, 10, 16)
+		ip, err := netip.ParseAddr(host)
+		if err != nil { // disallow domain addr at here, just ignore
 			log.Debugln("[Sudoku][UoT] discard datagram with invalid address %s: %v", addrStr, err)
 			continue
 		}
-		if _, err := io.ReadFull(c.conn, p[:payloadLen]); err != nil {
-			return 0, nil, err
-		}
-		return payloadLen, udpAddr, nil
+		udpAddr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), uint16(portInt)))
+
+		copy(p, payload)
+		return len(payload), udpAddr, nil
 	}
 }
 
@@ -121,47 +155,4 @@ func (c *UoTPacketConn) SetReadDeadline(t time.Time) error {
 
 func (c *UoTPacketConn) SetWriteDeadline(t time.Time) error {
 	return c.conn.SetWriteDeadline(t)
-}
-
-func readDatagramHeaderAndAddress(r io.Reader) (string, int, error) {
-	var header [4]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return "", 0, err
-	}
-
-	addrLen := int(binary.BigEndian.Uint16(header[:2]))
-	payloadLen := int(binary.BigEndian.Uint16(header[2:]))
-	if addrLen <= 0 || addrLen > maxUoTPayload {
-		return "", 0, fmt.Errorf("invalid address length: %d", addrLen)
-	}
-	if payloadLen < 0 || payloadLen > maxUoTPayload {
-		return "", 0, fmt.Errorf("invalid payload length: %d", payloadLen)
-	}
-
-	addrBuf := make([]byte, addrLen)
-	if _, err := io.ReadFull(r, addrBuf); err != nil {
-		return "", 0, err
-	}
-
-	addr, err := DecodeAddress(bytes.NewReader(addrBuf))
-	if err != nil {
-		return "", 0, fmt.Errorf("decode address: %w", err)
-	}
-	return addr, payloadLen, nil
-}
-
-func parseDatagramUDPAddr(addr string) (*net.UDPAddr, error) {
-	addrPort, err := netip.ParseAddrPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	return net.UDPAddrFromAddrPort(netip.AddrPortFrom(addrPort.Addr().Unmap(), addrPort.Port())), nil
-}
-
-func discardBytes(r io.Reader, n int) error {
-	if n <= 0 {
-		return nil
-	}
-	_, err := io.CopyN(io.Discard, r, int64(n))
-	return err
 }

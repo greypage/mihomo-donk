@@ -11,7 +11,6 @@ import (
 
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
-	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener/inner"
 
 	"github.com/metacubex/http"
@@ -51,7 +50,7 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		}
 	}
 
-	if req.Header.Get("User-Agent") == "" {
+	if _, ok := header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", UA())
 	}
 
@@ -75,13 +74,11 @@ func HttpRequest(ctx context.Context, url, method string, header map[string][]st
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			if opt.dialer != nil {
-				return opt.dialer.DialContext(ctx, network, address)
-			}
 			if conn, err := inner.HandleTcp(inner.GetTunnel(), address, opt.specialProxy); err == nil {
 				return conn, nil
+			} else {
+				return dialer.DialContext(ctx, network, address)
 			}
-			return dialer.DialContext(ctx, network, address)
 		},
 		TLSClientConfig: tlsConfig,
 	}
@@ -94,19 +91,12 @@ type Option func(opt *option)
 
 type option struct {
 	specialProxy string
-	dialer       C.Dialer
 	caOption     ca.Option
 }
 
 func WithSpecialProxy(name string) Option {
 	return func(opt *option) {
 		opt.specialProxy = name
-	}
-}
-
-func WithDialer(dialer C.Dialer) Option {
-	return func(opt *option) {
-		opt.dialer = dialer
 	}
 }
 

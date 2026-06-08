@@ -26,6 +26,7 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	"github.com/metacubex/mihomo/component/resource"
 	"github.com/metacubex/mihomo/component/sniffer"
+	tlsC "github.com/metacubex/mihomo/component/tls"
 	"github.com/metacubex/mihomo/component/trie"
 	"github.com/metacubex/mihomo/component/updater"
 	"github.com/metacubex/mihomo/config"
@@ -104,8 +105,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateGeneral(cfg.General, true)
 	updateNTP(cfg.NTP)
 	updateDNS(cfg.DNS, cfg.General.IPv6)
-	updateListeners(cfg.General, cfg.Listeners, force)
-	updateTun(cfg.General) // tun should not care "force"
+	//updateListeners(cfg.General, cfg.Listeners, force)
+	//updateTun(cfg.General) // tun should not care "force"
 	updateIPTables(cfg)
 	updateTunnels(cfg.Tunnels)
 
@@ -165,19 +166,20 @@ func GetGeneral() *config.General {
 			ASN:     geodata.ASNUrl(),
 			GeoSite: geodata.GeoSiteUrl(),
 		},
-		GeoAutoUpdate:     updater.GeoAutoUpdate(),
-		GeoUpdateInterval: updater.GeoUpdateInterval(),
-		GeodataMode:       geodata.GeodataMode(),
-		GeodataLoader:     geodata.LoaderName(),
-		GeositeMatcher:    geodata.SiteMatcherName(),
-		TCPConcurrent:     dialer.GetTcpConcurrent(),
-		FindProcessMode:   tunnel.FindProcessMode(),
-		Sniffing:          tunnel.IsSniffing(),
-		GlobalUA:          mihomoHttp.UA(),
-		ETagSupport:       resource.ETag(),
-		KeepAliveInterval: int(keepalive.KeepAliveInterval() / time.Second),
-		KeepAliveIdle:     int(keepalive.KeepAliveIdle() / time.Second),
-		DisableKeepAlive:  keepalive.DisableKeepAlive(),
+		GeoAutoUpdate:           updater.GeoAutoUpdate(),
+		GeoUpdateInterval:       updater.GeoUpdateInterval(),
+		GeodataMode:             geodata.GeodataMode(),
+		GeodataLoader:           geodata.LoaderName(),
+		GeositeMatcher:          geodata.SiteMatcherName(),
+		TCPConcurrent:           dialer.GetTcpConcurrent(),
+		FindProcessMode:         tunnel.FindProcessMode(),
+		Sniffing:                tunnel.IsSniffing(),
+		GlobalClientFingerprint: tlsC.GetGlobalFingerprint(),
+		GlobalUA:                mihomoHttp.UA(),
+		ETagSupport:             resource.ETag(),
+		KeepAliveInterval:       int(keepalive.KeepAliveInterval() / time.Second),
+		KeepAliveIdle:           int(keepalive.KeepAliveIdle() / time.Second),
+		DisableKeepAlive:        keepalive.DisableKeepAlive(),
 	}
 
 	return general
@@ -227,11 +229,10 @@ func updateNTP(c *config.NTP) {
 			net.JoinHostPort(c.Server, strconv.Itoa(c.Port)),
 			time.Duration(c.Interval),
 			c.DialerProxy,
-			tunnel.Tunnel,
 			c.WriteToSystem,
 		)
 	} else {
-		ntp.ReCreateNTPService("", 0, "", nil, false)
+		ntp.ReCreateNTPService("", 0, "", false)
 	}
 }
 
@@ -257,7 +258,6 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		Default:              c.DefaultNameserver,
 		Policy:               c.NameServerPolicy,
 		ProxyServer:          c.ProxyServerNameserver,
-		ProxyServerPolicy:    c.ProxyServerPolicy,
 		DirectServer:         c.DirectNameServer,
 		DirectFollowPolicy:   c.DirectFollowPolicy,
 		CacheAlgorithm:       c.CacheAlgorithm,
@@ -278,7 +278,7 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		m.PatchFrom(old.(*dns.ResolverEnhancer))
 	}
 
-	s := dns.NewService(r, m)
+	s := dns.NewService(r.Resolver, m)
 
 	resolver.DefaultResolver = r
 	resolver.DefaultHostMapper = m
@@ -325,12 +325,16 @@ func loadProvider[T P.Provider](providers map[string]T) {
 			switch pv.Type() {
 			case P.Proxy:
 				{
-					log.Errorln("initial proxy provider %s error: %v", name, err)
+					log.Warnln("initial proxy provider %s error: %v", name, err)
 				}
 			case P.Rule:
 				{
-					log.Errorln("initial rule provider %s error: %v", name, err)
+					log.Warnln("initial rule provider %s error: %v", name, err)
 				}
+			}
+		} else {
+			if DefaultProviderLoadedHook != nil {
+				DefaultProviderLoadedHook(name)
 			}
 		}
 	}
@@ -346,7 +350,6 @@ func loadProvider[T P.Provider](providers map[string]T) {
 			load(pv)
 		}()
 	}
-	wg.Wait()
 }
 
 func updateSniffer(snifferConfig *sniffer.Config) {
@@ -423,6 +426,11 @@ func updateGeneral(general *config.General, logging bool) {
 	geodata.SetASNUrl(general.GeoXUrl.ASN)
 	mihomoHttp.SetUA(general.GlobalUA)
 	resource.SetETag(general.ETagSupport)
+
+	if general.GlobalClientFingerprint != "" {
+		log.Warnln("The `global-client-fingerprint` configuration is deprecated, please set `client-fingerprint` directly on the proxy instead")
+	}
+	tlsC.SetGlobalFingerprint(general.GlobalClientFingerprint)
 }
 
 func updateUsers(users []auth.AuthUser) {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	crand "crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -14,26 +15,20 @@ import (
 	"github.com/metacubex/mihomo/transport/sudoku/obfs/sudoku"
 )
 
-type clientTableChoice struct {
-	Table   *sudoku.Table
-	Hint    uint32
-	HasHint bool
-}
-
-func pickClientTable(cfg *ProtocolConfig) (clientTableChoice, error) {
+func pickClientTable(cfg *ProtocolConfig) (*sudoku.Table, error) {
 	candidates := cfg.tableCandidates()
 	if len(candidates) == 0 {
-		return clientTableChoice{}, fmt.Errorf("no table configured")
+		return nil, fmt.Errorf("no table configured")
 	}
 	if len(candidates) == 1 {
-		return clientTableChoice{Table: candidates[0], Hint: candidates[0].Hint()}, nil
+		return candidates[0], nil
 	}
 	var b [1]byte
 	if _, err := crand.Read(b[:]); err != nil {
-		return clientTableChoice{}, fmt.Errorf("random table pick failed: %w", err)
+		return nil, fmt.Errorf("random table pick failed: %w", err)
 	}
 	idx := int(b[0]) % len(candidates)
-	return clientTableChoice{Table: candidates[idx], Hint: candidates[idx].Hint(), HasHint: true}, nil
+	return candidates[idx], nil
 }
 
 type readOnlyConn struct {
@@ -61,27 +56,26 @@ func drainBuffered(r *bufio.Reader) ([]byte, error) {
 func probeHandshakeBytes(probe []byte, cfg *ProtocolConfig, table *sudoku.Table) error {
 	rc := &readOnlyConn{Reader: bytes.NewReader(probe)}
 	_, obfsConn := buildServerObfsConn(rc, cfg, table, false)
-	seed := ServerAEADSeed(cfg.Key)
-	pskC2S, pskS2C := derivePSKDirectionalBases(seed)
-	// Server side: recv is client->server, send is server->client.
-	cConn, err := crypto.NewRecordConn(obfsConn, cfg.AEADMethod, pskS2C, pskC2S)
+	cConn, err := crypto.NewAEADConn(obfsConn, cfg.Key, cfg.AEADMethod)
 	if err != nil {
 		return err
 	}
 
-	msg, err := ReadKIPMessage(cConn)
-	if err != nil {
+	var handshakeBuf [16]byte
+	if _, err := io.ReadFull(cConn, handshakeBuf[:]); err != nil {
 		return err
 	}
-	if msg.Type != KIPTypeClientHello {
-		return fmt.Errorf("unexpected handshake message: %d", msg.Type)
+	ts := int64(binary.BigEndian.Uint64(handshakeBuf[:8]))
+	if absInt64(time.Now().Unix()-ts) > 60 {
+		return fmt.Errorf("timestamp skew/replay detected")
 	}
-	ch, err := DecodeKIPClientHelloPayload(msg.Payload)
-	if err != nil {
+
+	modeBuf := []byte{0}
+	if _, err := io.ReadFull(cConn, modeBuf); err != nil {
 		return err
 	}
-	if absInt64(time.Now().Unix()-ch.Timestamp.Unix()) > int64(kipHandshakeSkew.Seconds()) {
-		return fmt.Errorf("time skew/replay")
+	if modeBuf[0] != downlinkMode(cfg) {
+		return fmt.Errorf("downlink mode mismatch")
 	}
 
 	return nil
@@ -99,17 +93,6 @@ func selectTableByProbe(r *bufio.Reader, cfg *ProtocolConfig, tables []*sudoku.T
 		return nil, nil, fmt.Errorf("too many table candidates: %d", len(tables))
 	}
 
-	// Copy so we can prune candidates without mutating the caller slice.
-	candidates := make([]*sudoku.Table, 0, len(tables))
-	for _, t := range tables {
-		if t != nil {
-			candidates = append(candidates, t)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, nil, fmt.Errorf("no table candidates")
-	}
-
 	probe, err := drainBuffered(r)
 	if err != nil {
 		return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
@@ -117,18 +100,17 @@ func selectTableByProbe(r *bufio.Reader, cfg *ProtocolConfig, tables []*sudoku.T
 
 	tmp := make([]byte, readChunk)
 	for {
-		if len(candidates) == 1 {
+		if len(tables) == 1 {
 			tail, err := drainBuffered(r)
 			if err != nil {
 				return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
 			}
 			probe = append(probe, tail...)
-			return candidates[0], probe, nil
+			return tables[0], probe, nil
 		}
 
 		needMore := false
-		next := candidates[:0]
-		for _, table := range candidates {
+		for _, table := range tables {
 			err := probeHandshakeBytes(probe, cfg, table)
 			if err == nil {
 				tail, err := drainBuffered(r)
@@ -140,13 +122,10 @@ func selectTableByProbe(r *bufio.Reader, cfg *ProtocolConfig, tables []*sudoku.T
 			}
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				needMore = true
-				next = append(next, table)
 			}
-			// Definitive mismatch: drop table.
 		}
-		candidates = next
 
-		if len(candidates) == 0 || !needMore {
+		if !needMore {
 			return nil, probe, fmt.Errorf("handshake table selection failed")
 		}
 		if len(probe) >= maxProbeBytes {

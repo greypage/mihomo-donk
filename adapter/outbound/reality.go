@@ -12,9 +12,9 @@ import (
 
 type RealityOptions struct {
 	PublicKey string `proxy:"public-key"`
-	ShortID   string `proxy:"short-id,omitempty"`
+	ShortID   string `proxy:"short-id"`
 
-	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
+	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768"`
 }
 
 func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {

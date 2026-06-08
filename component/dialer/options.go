@@ -24,12 +24,6 @@ type NetDialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-type NetDialerFunc func(ctx context.Context, network, address string) (net.Conn, error)
-
-func (f NetDialerFunc) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return f(ctx, network, address)
-}
-
 type option struct {
 	interfaceName string
 	fallbackBind  bool
@@ -118,14 +112,6 @@ func WithNetDialer(netDialer NetDialer) Option {
 func WithOption(o option) Option {
 	return func(opt *option) {
 		*opt = o
-	}
-}
-
-func WithOptions(options ...Option) Option {
-	return func(opt *option) {
-		for _, o := range options {
-			o(opt)
-		}
 	}
 }
 

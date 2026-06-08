@@ -180,12 +180,10 @@ func matchSubRules(metadata *C.Metadata, name string, subRules map[string][]C.Ru
 	for _, rule := range subRules[name] {
 		if m, a := rule.Match(metadata, helper); m {
 			if rule.RuleType() == C.SubRules {
-				m, a = matchSubRules(metadata, rule.Adapter(), subRules, helper)
+				return matchSubRules(metadata, rule.Adapter(), subRules, helper)
+			} else {
+				return m, a
 			}
-			if m && (a == "PASS-RULE" || (helper.CheckPassRule != nil && helper.CheckPassRule(a))) {
-				continue 
-			}
-			return m, a
 		}
 	}
 	return false, ""

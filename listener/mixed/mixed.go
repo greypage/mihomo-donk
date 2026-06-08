@@ -148,7 +148,6 @@ func handleConn(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions 
 	bufConn := N.NewBufferedConn(conn)
 	head, err := bufConn.Peek(1)
 	if err != nil {
-		conn.Close()
 		return
 	}
 

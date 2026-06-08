@@ -16,8 +16,6 @@ import (
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
-
-	"github.com/gofrs/uuid/v5"
 )
 
 type ProxyAdapter interface {
@@ -39,38 +37,7 @@ type Base struct {
 	rmark  int
 	prefer C.DNSPrefer
 	dialer C.Dialer
-	id     uuid.UUID
-}
-
-type BaseOption struct {
-	Name         string
-	Addr         string
-	Type         C.AdapterType
-	ProviderName string
-	UDP          bool
-	XUDP         bool
-	TFO          bool
-	MPTCP        bool
-	Interface    string
-	RoutingMark  int
-	Prefer       C.DNSPrefer
-}
-
-func NewBase(opt BaseOption) *Base {
-	return &Base{
-		name:   opt.Name,
-		addr:   opt.Addr,
-		tp:     opt.Type,
-		pdName: opt.ProviderName,
-		udp:    opt.UDP,
-		xudp:   opt.XUDP,
-		tfo:    opt.TFO,
-		mpTcp:  opt.MPTCP,
-		iface:  opt.Interface,
-		rmark:  opt.RoutingMark,
-		prefer: opt.Prefer,
-		id:     utils.NewUUIDV4(),
-	}
+	id     string
 }
 
 // Name implements C.ProxyAdapter
@@ -80,7 +47,11 @@ func (b *Base) Name() string {
 
 // Id implements C.ProxyAdapter
 func (b *Base) Id() string {
-	return b.id.String()
+	if b.id == "" {
+		b.id = utils.NewUUIDV6().String()
+	}
+
+	return b.id
 }
 
 // Type implements C.ProxyAdapter
@@ -177,7 +148,7 @@ func (b *Base) DialOptions() (opts []dialer.Option) {
 
 func (b *Base) ResolveUDP(ctx context.Context, metadata *C.Metadata) error {
 	if !metadata.Resolved() {
-		ip, err := resolveIPWithResolver(ctx, metadata.Host, b.prefer, resolver.DefaultResolver)
+		ip, err := resolver.ResolveIP(ctx, metadata.Host)
 		if err != nil {
 			return fmt.Errorf("can't resolve ip: %w", err)
 		}
@@ -202,7 +173,6 @@ type BasicOption struct {
 	// The following parameters are used internally, assign value by the structure decoder are disallowed
 	//
 	DialerForAPI C.Dialer `proxy:"-"` // the dialer used for API usage has higher priority than all the above configurations.
-	TunnelForAPI C.Tunnel `proxy:"-"`
 	ProviderName string   `proxy:"-"`
 }
 
@@ -210,7 +180,7 @@ func (b *BasicOption) NewDialer(opts []dialer.Option) C.Dialer {
 	cDialer := b.DialerForAPI
 	if cDialer == nil {
 		if b.DialerProxy != "" {
-			cDialer = proxydialer.NewByName(b.DialerProxy, b.NewTunnel())
+			cDialer = proxydialer.NewByName(b.DialerProxy)
 		} else {
 			cDialer = dialer.NewDialer(opts...)
 		}
@@ -218,8 +188,32 @@ func (b *BasicOption) NewDialer(opts []dialer.Option) C.Dialer {
 	return cDialer
 }
 
-func (b *BasicOption) NewTunnel() C.Tunnel {
-	return b.TunnelForAPI
+type BaseOption struct {
+	Name        string
+	Addr        string
+	Type        C.AdapterType
+	UDP         bool
+	XUDP        bool
+	TFO         bool
+	MPTCP       bool
+	Interface   string
+	RoutingMark int
+	Prefer      C.DNSPrefer
+}
+
+func NewBase(opt BaseOption) *Base {
+	return &Base{
+		name:   opt.Name,
+		addr:   opt.Addr,
+		tp:     opt.Type,
+		udp:    opt.UDP,
+		xudp:   opt.XUDP,
+		tfo:    opt.TFO,
+		mpTcp:  opt.MPTCP,
+		iface:  opt.Interface,
+		rmark:  opt.RoutingMark,
+		prefer: opt.Prefer,
+	}
 }
 
 type conn struct {

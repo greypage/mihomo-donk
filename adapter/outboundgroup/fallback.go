@@ -19,6 +19,8 @@ type Fallback struct {
 	testUrl        string
 	selected       string
 	expectedStatus string
+	Hidden         bool
+	Icon           string
 }
 
 func (f *Fallback) Now() string {
@@ -88,9 +90,8 @@ func (f *Fallback) MarshalJSON() ([]byte, error) {
 		"testUrl":        f.testUrl,
 		"expectedStatus": f.expectedStatus,
 		"fixed":          f.selected,
-		"hidden":         f.Hidden(),
-		"icon":           f.Icon(),
-		"emptyFallback":  f.EmptyFallback().Name(),
+		"hidden":         f.Hidden,
+		"icon":           f.Icon,
 	})
 }
 
@@ -157,23 +158,22 @@ func (f *Fallback) Proxies() []C.Proxy {
 	return f.GetProxies(false)
 }
 
-func NewFallback(option *GroupCommonOption, emptyFallback C.Proxy, providers []P.ProxyProvider) *Fallback {
+func NewFallback(option *GroupCommonOption, providers []P.ProxyProvider) *Fallback {
 	return &Fallback{
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
 			Type:           C.Fallback,
-			Hidden:         option.Hidden,
-			Icon:           option.Icon,
 			Filter:         option.Filter,
 			ExcludeFilter:  option.ExcludeFilter,
 			ExcludeType:    option.ExcludeType,
 			TestTimeout:    option.TestTimeout,
 			MaxFailedTimes: option.MaxFailedTimes,
-			EmptyFallback:  emptyFallback,
 			Providers:      providers,
 		}),
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
+		Hidden:         option.Hidden,
+		Icon:           option.Icon,
 	}
 }

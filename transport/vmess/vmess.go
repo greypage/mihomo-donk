@@ -84,7 +84,10 @@ func (c *Client) StreamConn(conn net.Conn, dst *DstAddr) (net.Conn, error) {
 
 // NewClient return Client instance
 func NewClient(config Config) (*Client, error) {
-	uid := utils.UUIDMap(config.UUID)
+	uid, err := utils.UUIDMap(config.UUID)
+	if err != nil {
+		return nil, err
+	}
 
 	var security Security
 	switch config.Security {

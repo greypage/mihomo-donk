@@ -18,6 +18,7 @@ func TestUserHash_StableAcrossTableRotation(t *testing.T) {
 		sudokuobfs.NewTable("seed-b", "prefer_ascii"),
 	}
 	key := "userhash-stability-key"
+	target := "example.com:80"
 
 	serverCfg := DefaultConfig()
 	serverCfg.Key = key
@@ -47,16 +48,13 @@ func TestUserHash_StableAcrossTableRotation(t *testing.T) {
 			}
 			go func(conn net.Conn) {
 				defer conn.Close()
-				_, meta, err := ServerHandshake(conn, serverCfg)
+				session, err := ServerHandshake(conn, serverCfg)
 				if err != nil {
 					errCh <- err
 					return
 				}
-				if meta == nil || meta.UserHash == "" {
-					errCh <- io.ErrUnexpectedEOF
-					return
-				}
-				hashCh <- meta.UserHash
+				defer session.Conn.Close()
+				hashCh <- session.UserHash
 			}(c)
 		}
 	}()
@@ -79,6 +77,15 @@ func TestUserHash_StableAcrossTableRotation(t *testing.T) {
 			t.Fatalf("handshake %d: %v", i, err)
 		}
 
+		addrBuf, err := EncodeAddress(target)
+		if err != nil {
+			_ = cConn.Close()
+			t.Fatalf("encode addr %d: %v", i, err)
+		}
+		if _, err := cConn.Write(addrBuf); err != nil {
+			_ = cConn.Close()
+			t.Fatalf("write addr %d: %v", i, err)
+		}
 		_ = cConn.Close()
 	}
 
@@ -138,22 +145,18 @@ func TestMultiplex_TCP_Echo(t *testing.T) {
 		}
 		defer raw.Close()
 
-		c, meta, err := ServerHandshake(raw, serverCfg)
+		session, err := ServerHandshake(raw, serverCfg)
 		if err != nil {
 			return
 		}
 		atomic.AddInt64(&handshakes, 1)
 
-		session, err := ReadServerSession(c, meta)
-		if err != nil {
-			return
-		}
 		if session.Type != SessionTypeMultiplex {
-			_ = c.Close()
+			_ = session.Conn.Close()
 			return
 		}
 
-		mux, err := AcceptMultiplexServer(c)
+		mux, err := AcceptMultiplexServer(session.Conn)
 		if err != nil {
 			return
 		}
@@ -235,5 +238,23 @@ func TestMultiplex_TCP_Echo(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&streams); got < 6 {
 		t.Fatalf("unexpected stream count: %d", got)
+	}
+}
+
+func TestMultiplex_Boundary_InvalidVersion(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = server.Close() })
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := AcceptMultiplexServer(server)
+		errCh <- err
+	}()
+
+	// AcceptMultiplexServer expects the magic byte to have been consumed already; write a bad version byte.
+	_, _ = client.Write([]byte{0xFF})
+	if err := <-errCh; err == nil {
+		t.Fatalf("expected error")
 	}
 }

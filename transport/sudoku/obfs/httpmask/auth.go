@@ -8,14 +8,11 @@ import (
 	"encoding/binary"
 	"strings"
 	"time"
-
-	"github.com/metacubex/http"
 )
 
 const (
 	tunnelAuthHeaderKey    = "Authorization"
 	tunnelAuthHeaderPrefix = "Bearer "
-	tunnelAuthQueryKey     = "auth"
 )
 
 type tunnelAuth struct {
@@ -64,15 +61,8 @@ func (a *tunnelAuth) verify(headers map[string]string, mode TunnelMode, method, 
 	if headers == nil {
 		return false
 	}
-	return a.verifyValue(headers["authorization"], mode, method, path, now)
-}
 
-func (a *tunnelAuth) verifyValue(val string, mode TunnelMode, method, path string, now time.Time) bool {
-	if a == nil {
-		return true
-	}
-
-	val = strings.TrimSpace(val)
+	val := strings.TrimSpace(headers["authorization"])
 	if val == "" {
 		return false
 	}
@@ -131,9 +121,11 @@ func (a *tunnelAuth) sign(mode TunnelMode, method, path string, ts int64) [16]by
 	return out
 }
 
-type httpHeaderSetter = http.Header
+type headerSetter interface {
+	Set(key, value string)
+}
 
-func applyTunnelAuthHeader(h httpHeaderSetter, auth *tunnelAuth, mode TunnelMode, method, path string) {
+func applyTunnelAuthHeader(h headerSetter, auth *tunnelAuth, mode TunnelMode, method, path string) {
 	if auth == nil || h == nil {
 		return
 	}
@@ -142,20 +134,4 @@ func applyTunnelAuthHeader(h httpHeaderSetter, auth *tunnelAuth, mode TunnelMode
 		return
 	}
 	h.Set(tunnelAuthHeaderKey, tunnelAuthHeaderPrefix+token)
-}
-
-func applyTunnelAuth(req *http.Request, auth *tunnelAuth, mode TunnelMode, method, path string) {
-	if auth == nil || req == nil {
-		return
-	}
-	token := auth.token(mode, method, path, time.Now())
-	if token == "" {
-		return
-	}
-	req.Header.Set(tunnelAuthHeaderKey, tunnelAuthHeaderPrefix+token)
-	if req.URL != nil {
-		q := req.URL.Query()
-		q.Set(tunnelAuthQueryKey, token)
-		req.URL.RawQuery = q.Encode()
-	}
 }

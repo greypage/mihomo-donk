@@ -8,8 +8,6 @@ import (
 	"github.com/metacubex/mihomo/common/pool"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/socks5"
-
-	"golang.org/x/exp/slices"
 )
 
 type UDPListener struct {
@@ -83,7 +81,7 @@ func NewUDP(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*UDPLi
 			}
 
 			dscp, _ := getDSCP(oob[:oobn])
-			additions := append(slices.Clip(additions), inbound.WithDSCP(dscp)) // don't change outside additions
+			additions := append(additions, inbound.WithDSCP(dscp)) // don't change outside additions
 
 			if rAddr.Addr().Is4() {
 				// try to unmap 4in6 address
@@ -99,11 +97,10 @@ func NewUDP(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*UDPLi
 func handlePacketConn(pc net.PacketConn, tunnel C.Tunnel, buf []byte, lAddr, rAddr netip.AddrPort, additions ...inbound.Addition) {
 	target := socks5.AddrFromStdAddrPort(rAddr)
 	pkt := &packet{
-		pc:        pc,
-		lAddr:     lAddr,
-		buf:       buf,
-		tunnel:    tunnel,
-		additions: additions,
+		pc:     pc,
+		lAddr:  lAddr,
+		buf:    buf,
+		tunnel: tunnel,
 	}
 	tunnel.HandleUDPPacket(inbound.NewPacket(target, pkt, C.TPROXY, additions...))
 }

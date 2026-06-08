@@ -2,7 +2,6 @@ package proxydialer
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/netip"
 	"strings"
@@ -34,7 +33,6 @@ func (p proxyDialer) DialContext(ctx context.Context, network, address string) (
 		if !currentMeta.Resolved() { // should not happen, maybe by a wrongly implemented proxy, but we can handle this (:
 			err = pc.ResolveUDP(ctx, currentMeta)
 			if err != nil {
-				_ = pc.Close()
 				return nil, err
 			}
 		}
@@ -51,9 +49,6 @@ func (p proxyDialer) DialContext(ctx context.Context, network, address string) (
 }
 
 func (p proxyDialer) ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort) (net.PacketConn, error) {
-	if !strings.HasPrefix(network, "udp") {
-		return nil, fmt.Errorf("proxyDialer only support udp network, but got: %s", network)
-	}
 	currentMeta := &C.Metadata{Type: C.INNER, DstIP: rAddrPort.Addr(), DstPort: rAddrPort.Port()}
 	return p.listenPacket(ctx, currentMeta)
 }

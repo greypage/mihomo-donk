@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/exp/constraints"
@@ -37,14 +38,39 @@ func newIntRangesFromList[T constraints.Integer](list []string, parseFn func(str
 			continue
 		}
 
-		r, err := newIntRange[T](s, parseFn)
-		if err != nil {
-			return nil, err
+		status := strings.Split(s, "-")
+		statusLen := len(status)
+		if statusLen > 2 {
+			return nil, errIntRanges
 		}
-		ranges = append(ranges, r)
+
+		start, err := parseFn(strings.Trim(status[0], "[ ]"))
+		if err != nil {
+			return nil, errIntRanges
+		}
+
+		switch statusLen {
+		case 1: // Port range
+			ranges = append(ranges, NewRange(T(start), T(start)))
+		case 2: // Single port
+			end, err := parseFn(strings.Trim(status[1], "[ ]"))
+			if err != nil {
+				return nil, errIntRanges
+			}
+
+			ranges = append(ranges, NewRange(T(start), T(end)))
+		}
 	}
 
 	return ranges, nil
+}
+
+func parseUnsigned[T constraints.Unsigned](s string) (T, error) {
+	if val, err := strconv.ParseUint(s, 10, 64); err == nil {
+		return T(val), nil
+	} else {
+		return 0, err
+	}
 }
 
 func NewUnsignedRanges[T constraints.Unsigned](expected string) (IntRanges[T], error) {
@@ -53,6 +79,14 @@ func NewUnsignedRanges[T constraints.Unsigned](expected string) (IntRanges[T], e
 
 func NewUnsignedRangesFromList[T constraints.Unsigned](list []string) (IntRanges[T], error) {
 	return newIntRangesFromList(list, parseUnsigned[T])
+}
+
+func parseSigned[T constraints.Signed](s string) (T, error) {
+	if val, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return T(val), nil
+	} else {
+		return 0, err
+	}
 }
 
 func NewSignedRanges[T constraints.Signed](expected string) (IntRanges[T], error) {
@@ -84,7 +118,17 @@ func (ranges IntRanges[T]) String() string {
 
 	terms := make([]string, len(ranges))
 	for i, r := range ranges {
-		terms[i] = r.String()
+		start := r.Start()
+		end := r.End()
+
+		var term string
+		if start == end {
+			term = strconv.Itoa(int(start))
+		} else {
+			term = strconv.Itoa(int(start)) + "-" + strconv.Itoa(int(end))
+		}
+
+		terms[i] = term
 	}
 
 	return strings.Join(terms, "/")

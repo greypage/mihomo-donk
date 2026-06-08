@@ -1,12 +1,11 @@
 package xsync
 
-// copy and modified from https://github.com/puzpuzpuz/xsync/blob/v4.5.0/map.go
+// copy and modified from https://github.com/puzpuzpuz/xsync/blob/v4.2.0/map.go
 // which is licensed under Apache v2.
 //
 // mihomo modified:
 // 1. restore xsync/v3's LoadOrCompute api and rename to LoadOrStoreFn.
 // 2. the zero Map is ready for use.
-// 3. remove unnecessary member variables added by xsync/v3's "optimize Map for integer keys"
 
 import (
 	"fmt"
@@ -38,10 +37,11 @@ const (
 	// minimum counter stripes to use
 	minMapCounterLen = 8
 	// maximum counter stripes to use; stands for around 4KB of memory
-	maxMapCounterLen   = 32
-	metaMask           = 0xffffffffff
-	occupiedMeta       = 0x8080808080808080
-	occupiedMetaMasked = occupiedMeta & metaMask
+	maxMapCounterLen         = 32
+	defaultMeta       uint64 = 0x8080808080808080
+	metaMask          uint64 = 0xffffffffff
+	defaultMetaMasked uint64 = defaultMeta & metaMask
+	emptyMetaSlot     uint8  = 0x80
 	// minimal number of buckets to transfer when participating in cooperative
 	// resize; should be at least defaultMinMapTableLen
 	minResizeTransferStride = 64
@@ -212,7 +212,7 @@ func NewMap[K comparable, V any](options ...func(*MapConfig)) *Map[K, V] {
 
 	m := &Map[K, V]{}
 	if c.sizeHint > defaultMinMapTableLen*entriesPerMapBucket {
-		tableLen := nextPowOf2(uint64((float64(c.sizeHint) / entriesPerMapBucket) / mapLoadFactor))
+		tableLen := nextPowOf2(uint32((float64(c.sizeHint) / entriesPerMapBucket) / mapLoadFactor))
 		m.minTableLen = int(tableLen)
 	}
 	m.growOnly = c.growOnly
@@ -229,46 +229,11 @@ func (m *Map[K, V]) init() {
 	m.table.Store(table)
 }
 
-// detectIntKey returns true if the key type is an integer type.
-func detectIntKey[K comparable]() bool {
-	var zero K
-	switch any(zero).(type) {
-	case int, uint, uintptr, int64, uint64, int32, uint32, int16, uint16, int8, uint8:
-		return true
-	default:
-		return false
-	}
-}
-
-// hashUint64 computes a hash for integer keys using two rounds of
-// multiply-xorshift mixing (wyhash-style).
-// This is significantly faster than maphash.Comparable for integer types.
-func hashUint64(seed maphash.Seed, v uint64) uint64 {
-	// maphash.Seed is just a uint64, so we can convert it directly
-	hi, lo := bits.Mul64(v^(*(*uint64)(unsafe.Pointer(&seed))), 0x2d358dccaa6c78a5)
-	hi2, lo2 := bits.Mul64(hi^lo, 0x8bb84b93962eacc9)
-	return hi2 ^ lo2
-}
-
-// toUint64 reinterprets integer-like keys as uint64 for hashUint64.
-// The size switch is folded per instantiated K by the compiler.
-func toUint64[K any](k K) uint64 {
-	switch unsafe.Sizeof(k) {
-	case 8:
-		return *(*uint64)(unsafe.Pointer(&k))
-	case 4:
-		return uint64(*(*uint32)(unsafe.Pointer(&k)))
-	case 2:
-		return uint64(*(*uint16)(unsafe.Pointer(&k)))
-	case 1:
-		return uint64(*(*uint8)(unsafe.Pointer(&k)))
-	default:
-		panic("unreachable")
-	}
-}
-
 func newMapTable[K comparable, V any](minTableLen int, seed maphash.Seed) *mapTable[K, V] {
 	buckets := make([]bucketPadded, minTableLen)
+	for i := range buckets {
+		buckets[i].meta = defaultMeta
+	}
 	counterLen := minTableLen >> 10
 	if counterLen < minMapCounterLen {
 		counterLen = minMapCounterLen
@@ -305,33 +270,17 @@ func ToPlainMap[K comparable, V any](m *Map[K, V]) map[K]V {
 func (m *Map[K, V]) Load(key K) (value V, ok bool) {
 	m.initOnce.Do(m.init)
 	table := m.table.Load()
-	var hash uint64
-	if detectIntKey[K]() {
-		hash = hashUint64(table.seed, toUint64(key))
-	} else {
-		hash = maphash.Comparable(table.seed, key)
-	}
+	hash := maphash.Comparable(table.seed, key)
 	h1 := h1(hash)
 	h2w := broadcast(h2(hash))
 	bidx := uint64(len(table.buckets)-1) & h1
-	// Same as: b := &table.buckets[bidx]
-	// Inline bounds check elimination via unsafe pointer arithmetic.
-	// Safety: bidx is always < len(table.buckets) since it's masked with (len-1).
-	b := (*bucketPadded)(unsafe.Add(unsafe.Pointer(&table.buckets[0]),
-		uintptr(bidx)*unsafe.Sizeof(bucketPadded{})))
+	b := &table.buckets[bidx]
 	for {
 		metaw := atomic.LoadUint64(&b.meta)
 		markedw := markZeroBytes(metaw^h2w) & metaMask
 		for markedw != 0 {
 			idx := firstMarkedByteIndex(markedw)
-			// Same as: eptr := atomic.LoadPointer(&b.entries[idx])
-			// Inline bounds check elimination via unsafe pointer arithmetic.
-			// Safety: idx is always < entriesPerMapBucket (5) since it comes from
-			// firstMarkedByteIndex which returns index of a marked byte in the
-			// 5-byte metadata mask (metaMask).
-			eptr := atomic.LoadPointer((*unsafe.Pointer)(unsafe.Add(
-				unsafe.Pointer(&b.entries[0]),
-				uintptr(idx)*unsafe.Sizeof(b.entries[0]))))
+			eptr := atomic.LoadPointer(&b.entries[idx])
 			if eptr != nil {
 				e := (*entry[K, V])(eptr)
 				if e.key == key {
@@ -350,109 +299,14 @@ func (m *Map[K, V]) Load(key K) (value V, ok bool) {
 
 // Store sets the value for a key.
 func (m *Map[K, V]) Store(key K, value V) {
-	m.initOnce.Do(m.init)
-	// Store is a popular operation, hence instead of using doCompute,
-	// it uses a simplified and slightly faster version of it.
-	for {
-	store_attempt:
-		var (
-			emptyb   *bucketPadded
-			emptyidx int
-		)
-		table := m.table.Load()
-		tableLen := len(table.buckets)
-		var hash uint64
-		if detectIntKey[K]() {
-			hash = hashUint64(table.seed, toUint64(key))
-		} else {
-			hash = maphash.Comparable(table.seed, key)
-		}
-		h1 := h1(hash)
-		h2 := h2(hash)
-		h2w := broadcast(h2)
-		bidx := uint64(len(table.buckets)-1) & h1
-		rootb := &table.buckets[bidx]
-
-		rootb.mu.Lock()
-		// The following two checks must go in reverse to what's
-		// in the resize method.
-		if seq := resizeSeq(m.resizeCtl.Load()); seq&1 == 1 {
-			// Resize is in progress. Help with the transfer, then go for another attempt.
-			rootb.mu.Unlock()
-			m.helpResize(seq)
-			goto store_attempt
-		}
-		if m.newerTableExists(table) {
-			// Someone resized the table. Go for another attempt.
-			rootb.mu.Unlock()
-			goto store_attempt
-		}
-		b := rootb
-		for {
-			metaw := b.meta
-			markedw := markZeroBytes(metaw^h2w) & metaMask
-			for markedw != 0 {
-				idx := firstMarkedByteIndex(markedw)
-				eptr := b.entries[idx]
-				if eptr != nil {
-					e := (*entry[K, V])(eptr)
-					if e.key == key {
-						// In-place update.
-						newe := new(entry[K, V])
-						newe.key = key
-						newe.value = value
-						atomic.StorePointer(&b.entries[idx], unsafe.Pointer(newe))
-						rootb.mu.Unlock()
-						return
-					}
-				}
-				markedw &= markedw - 1
-			}
-			if emptyb == nil {
-				// Search for empty entries (up to 5 per bucket).
-				emptyw := ^metaw & occupiedMetaMasked
-				if emptyw != 0 {
-					idx := firstMarkedByteIndex(emptyw)
-					emptyb = b
-					emptyidx = idx
-				}
-			}
-			if b.next == nil {
-				if emptyb != nil {
-					// Insertion into an existing bucket.
-					newe := new(entry[K, V])
-					newe.key = key
-					newe.value = value
-					// First we update meta, then the entry.
-					atomic.StoreUint64(&emptyb.meta, setByte(emptyb.meta, h2, emptyidx))
-					atomic.StorePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
-					rootb.mu.Unlock()
-					table.addSize(bidx, 1)
-					return
-				}
-				growThreshold := float64(tableLen) * entriesPerMapBucket * mapLoadFactor
-				if table.sumSize() > int64(growThreshold) {
-					// Need to grow the table. Then go for another attempt.
-					rootb.mu.Unlock()
-					m.resize(table, mapGrowHint)
-					goto store_attempt
-				}
-				// Insertion into a new bucket.
-				// Create and append a bucket.
-				newb := new(bucketPadded)
-				newb.meta = setByte(0, h2, 0)
-				newe := new(entry[K, V])
-				newe.key = key
-				newe.value = value
-				newb.entries[0] = unsafe.Pointer(newe)
-				atomic.StorePointer(&b.next, unsafe.Pointer(newb))
-				rootb.mu.Unlock()
-				table.addSize(bidx, 1)
-				return
-			}
-			b = (*bucketPadded)(b.next)
-		}
-	}
+	m.doCompute(
+		key,
+		func(V, bool) (V, ComputeOp) {
+			return value, UpdateOp
+		},
+		noLoadOp,
+		false,
+	)
 }
 
 // LoadOrStore returns the existing value for the key if present.
@@ -582,12 +436,7 @@ func (m *Map[K, V]) doCompute(
 		)
 		table := m.table.Load()
 		tableLen := len(table.buckets)
-		var hash uint64
-		if detectIntKey[K]() {
-			hash = hashUint64(table.seed, toUint64(key))
-		} else {
-			hash = maphash.Comparable(table.seed, key)
-		}
+		hash := maphash.Comparable(table.seed, key)
 		h1 := h1(hash)
 		h2 := h2(hash)
 		h2w := broadcast(h2)
@@ -660,13 +509,13 @@ func (m *Map[K, V]) doCompute(
 						case DeleteOp:
 							// Deletion.
 							// First we update the hash, then the entry.
-							newmetaw := setByte(metaw, 0, idx)
+							newmetaw := setByte(metaw, emptyMetaSlot, idx)
 							atomic.StoreUint64(&b.meta, newmetaw)
 							atomic.StorePointer(&b.entries[idx], nil)
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							// Might need to shrink the table if we left bucket empty.
-							if newmetaw == 0 {
+							if newmetaw == defaultMeta {
 								m.resize(table, mapShrinkHint)
 							}
 							return oldv, !computeOnly
@@ -691,7 +540,7 @@ func (m *Map[K, V]) doCompute(
 			}
 			if emptyb == nil {
 				// Search for empty entries (up to 5 per bucket).
-				emptyw := ^metaw & occupiedMetaMasked
+				emptyw := metaw & defaultMetaMasked
 				if emptyw != 0 {
 					idx := firstMarkedByteIndex(emptyw)
 					emptyb = b
@@ -732,11 +581,11 @@ func (m *Map[K, V]) doCompute(
 				switch op {
 				case DeleteOp, CancelOp:
 					rootb.mu.Unlock()
-					return zeroV, false
+					return newValue, false
 				default:
 					// Create and append a bucket.
 					newb := new(bucketPadded)
-					newb.meta = setByte(0, h2, 0)
+					newb.meta = setByte(defaultMeta, h2, 0)
 					newe := new(entry[K, V])
 					newe.key = key
 					newe.value = newValue
@@ -806,10 +655,10 @@ func (m *Map[K, V]) resize(knownTable *mapTable[K, V], hint mapResizeHint) {
 		shrinkThreshold := int64((tableLen * entriesPerMapBucket) / mapShrinkFraction)
 		if tableLen > m.minTableLen && table.sumSize() <= shrinkThreshold {
 			// Shrink the table with factor of 2.
-			// Analogous to growth, we must preserve the seed to ensure stable
-			// hash mapping, enabling lock-free writes to destination buckets.
+			// It's fine to generate a new seed since full locking
+			// is required anyway.
 			m.totalShrinks.Add(1)
-			newTable = newMapTable[K, V](tableLen>>1, table.seed)
+			newTable = newMapTable[K, V](tableLen>>1, maphash.MakeSeed())
 		} else {
 			// No need to shrink. Wake up all waiters and give up.
 			m.resizeMu.Lock()
@@ -891,20 +740,6 @@ func (m *Map[K, V]) helpResize(seq uint64) {
 func (m *Map[K, V]) transfer(table, newTable *mapTable[K, V]) {
 	tableLen := len(table.buckets)
 	newTableLen := len(newTable.buckets)
-	// Determines the concurrent task range for destination buckets.
-	// We iterate based on these properties to avoid locking destination
-	// buckets:
-	// - Grow (Pow2):   baseLen == tableLen
-	//   Entries from source bucket i move to dest buckets i and i+baseLen
-	// - Shrink (Pow2): baseLen == newTableLen
-	//   Entries from source buckets i and i+baseLen move to dest bucket i
-	// By iterating 0..baseLen and processing all possible source buckets
-	// (srcIdx += baseLen) in the inner loop, a single goroutine exclusively
-	// owns the write operations for its assigned destination buckets.
-	baseLen := tableLen
-	if baseLen > newTableLen {
-		baseLen = newTableLen
-	}
 	stride := (tableLen >> 3) / int(maxResizeHelpers)
 	if stride < minResizeTransferStride {
 		stride = minResizeTransferStride
@@ -916,20 +751,27 @@ func (m *Map[K, V]) transfer(table, newTable *mapTable[K, V]) {
 		if start < 0 {
 			start = 0
 		}
-		if start >= baseLen {
+		if start > tableLen {
 			break
 		}
 		end := int(nextIdx)
-		if end > baseLen {
-			end = baseLen
+		if end > tableLen {
+			end = tableLen
 		}
 		// Transfer buckets in this range.
 		total := 0
-		for i := start; i < end; i++ {
-			// Visit all source buckets that map to this destination bucket.
-			// When growing, runs once. When shrinking, runs twice.
-			for srcIdx := i; srcIdx < tableLen; srcIdx += baseLen {
-				total += transferBucketUnsafe(&table.buckets[srcIdx], newTable)
+		if newTableLen > tableLen {
+			// We're growing the table with 2x multiplier, so entries from a N bucket can
+			// only be transferred to N and 2*N buckets in the new table. Thus, destination
+			// buckets written by the resize helpers don't intersect, so we don't need to
+			// acquire locks in the destination buckets.
+			for i := start; i < end; i++ {
+				total += transferBucketUnsafe(&table.buckets[i], newTable)
+			}
+		} else {
+			// We're shrinking the table, so all locks must be acquired.
+			for i := start; i < end; i++ {
+				total += transferBucket(&table.buckets[i], newTable)
 			}
 		}
 		// The exact counter stripe doesn't matter here, so pick up the one
@@ -949,15 +791,37 @@ func transferBucketUnsafe[K comparable, V any](
 		for i := 0; i < entriesPerMapBucket; i++ {
 			if eptr := b.entries[i]; eptr != nil {
 				e := (*entry[K, V])(eptr)
-				var hash uint64
-				if detectIntKey[K]() {
-					hash = hashUint64(destTable.seed, toUint64(e.key))
-				} else {
-					hash = maphash.Comparable(destTable.seed, e.key)
-				}
+				hash := maphash.Comparable(destTable.seed, e.key)
 				bidx := uint64(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
 				appendToBucket(h2(hash), e, destb)
+				copied++
+			}
+		}
+		if b.next == nil {
+			rootb.mu.Unlock()
+			return
+		}
+		b = (*bucketPadded)(b.next)
+	}
+}
+
+func transferBucket[K comparable, V any](
+	b *bucketPadded,
+	destTable *mapTable[K, V],
+) (copied int) {
+	rootb := b
+	rootb.mu.Lock()
+	for {
+		for i := 0; i < entriesPerMapBucket; i++ {
+			if eptr := b.entries[i]; eptr != nil {
+				e := (*entry[K, V])(eptr)
+				hash := maphash.Comparable(destTable.seed, e.key)
+				bidx := uint64(len(destTable.buckets)-1) & h1(hash)
+				destb := &destTable.buckets[bidx]
+				destb.mu.Lock()
+				appendToBucket(h2(hash), e, destb)
+				destb.mu.Unlock()
 				copied++
 			}
 		}
@@ -982,9 +846,6 @@ func transferBucketUnsafe[K comparable, V any](
 // creation, modification and deletion. However, the concurrent
 // modification rule apply, i.e. the changes may be not reflected
 // in the subsequently iterated entries.
-//
-// For a faster, lock-free alternative with relaxed consistency
-// guarantees, see [RangeRelaxed].
 func (m *Map[K, V]) Range(f func(key K, value V) bool) {
 	m.initOnce.Do(m.init)
 	// Pre-allocate array big enough to fit entries for most hash tables.
@@ -1021,167 +882,6 @@ func (m *Map[K, V]) Range(f func(key K, value V) bool) {
 	}
 }
 
-// All is similar to [Range], but returns an [iter.Seq2], so is compatible with
-// Go 1.23+ iterators. All of the same caveats and behaviour from [Range] apply
-// to All.
-//
-// For a faster, lock-free alternative with relaxed consistency
-// guarantees, see [AllRelaxed].
-func (m *Map[K, V]) All() func(func(key K, value V) bool) {
-	return m.Range
-}
-
-// RangeRelaxed calls f sequentially for each key and value present
-// in the map. If f returns false, range stops the iteration.
-//
-// RangeRelaxed is a faster, lock-free alternative to [Range]. Unlike
-// Range, it does not acquire bucket locks and does not allocate memory
-// for entry snapshots. Instead, it reads entries directly using atomic
-// loads.
-//
-// RangeRelaxed does not necessarily correspond to any consistent
-// snapshot of the Map's contents: if the value for any key is stored
-// or deleted concurrently, RangeRelaxed may reflect any mapping for
-// that key from any point during the RangeRelaxed call. Unlike [Range],
-// the same key may be visited more than once if it is concurrently
-// deleted and re-inserted during the iteration.
-//
-// It is safe to modify the map while iterating it, including entry
-// creation, modification and deletion. However, the concurrent
-// modification rule apply, i.e. the changes may be not reflected
-// in the subsequently iterated entries.
-//
-// For stronger consistency guarantees where each key is visited at
-// most once, see [Range].
-func (m *Map[K, V]) RangeRelaxed(f func(key K, value V) bool) {
-	m.initOnce.Do(m.init)
-	table := m.table.Load()
-	for i := range table.buckets {
-		b := &table.buckets[i]
-		for {
-			metaw := atomic.LoadUint64(&b.meta)
-			markedw := metaw & occupiedMeta
-			for markedw != 0 {
-				idx := firstMarkedByteIndex(markedw)
-				eptr := atomic.LoadPointer(&b.entries[idx])
-				if eptr != nil {
-					e := (*entry[K, V])(eptr)
-					if !f(e.key, e.value) {
-						return
-					}
-				}
-				markedw &= markedw - 1
-			}
-			bptr := atomic.LoadPointer(&b.next)
-			if bptr == nil {
-				break
-			}
-			b = (*bucketPadded)(bptr)
-		}
-	}
-}
-
-// AllRelaxed is similar to [RangeRelaxed], but returns an [iter.Seq2],
-// so is compatible with Go 1.23+ iterators. All of the same caveats
-// and behaviour from [RangeRelaxed] apply to AllRelaxed.
-//
-// For stronger consistency guarantees where each key is visited at
-// most once, see [All].
-func (m *Map[K, V]) AllRelaxed() func(func(key K, value V) bool) {
-	return m.RangeRelaxed
-}
-
-// DeleteMatching deletes all entries for which the delete return
-// value of f is true. If the stop return value is true, the
-// iteration stops immediately. The function returns the number
-// of deleted entries.
-//
-// DeleteMatching does not necessarily correspond to any consistent
-// snapshot of the Map's contents: if the value for any key is stored
-// or deleted concurrently (including by a concurrent DeleteMatching
-// call), DeleteMatching may reflect any mapping for that key from
-// any point during the call. In particular, if the map is resized
-// during the call (for example, due to concurrent modifications),
-// the iteration restarts internally with the new table, which may
-// result in calling f with the same key more than once.
-//
-// This call locks a hash table bucket for the duration of
-// evaluating f for all entries in the bucket and performing
-// deletions. It means that modifications on other entries in
-// the bucket will be blocked until f executes. Consider this when
-// the function includes long-running operations.
-func (m *Map[K, V]) DeleteMatching(f func(key K, value V) (delete, stop bool)) int {
-	m.initOnce.Do(m.init)
-	var totalDeleted int
-	var anyBucketEmptied bool
-delete_loop_attempt:
-	table := m.table.Load()
-	for bidx := range table.buckets {
-		rootb := &table.buckets[bidx]
-		rootb.mu.Lock()
-		// The following two checks must go in reverse to what's
-		// in the resize method.
-		if seq := resizeSeq(m.resizeCtl.Load()); seq&1 == 1 {
-			// Resize is in progress. Help with the transfer, then go for another attempt.
-			rootb.mu.Unlock()
-			m.helpResize(seq)
-			goto delete_loop_attempt
-		}
-		if m.newerTableExists(table) {
-			// Someone resized the table. Go for another attempt.
-			rootb.mu.Unlock()
-			goto delete_loop_attempt
-		}
-
-		var bucketDeleted int
-		b := rootb
-		for {
-			for i := 0; i < entriesPerMapBucket; i++ {
-				eptr := b.entries[i]
-				if eptr != nil {
-					e := (*entry[K, V])(eptr)
-					del, stop := f(e.key, e.value)
-					if del {
-						// Deletion.
-						// First we update the meta, then the entry.
-						newmetaw := setByte(b.meta, 0, i)
-						atomic.StoreUint64(&b.meta, newmetaw)
-						atomic.StorePointer(&b.entries[i], nil)
-						bucketDeleted++
-						if newmetaw == 0 {
-							anyBucketEmptied = true
-						}
-					}
-					if stop {
-						rootb.mu.Unlock()
-						totalDeleted += bucketDeleted
-						if bucketDeleted > 0 {
-							table.addSize(uint64(bidx), -bucketDeleted)
-						}
-						if anyBucketEmptied {
-							m.resize(table, mapShrinkHint)
-						}
-						return totalDeleted
-					}
-				}
-			}
-			if b.next == nil {
-				break
-			}
-			b = (*bucketPadded)(b.next)
-		}
-		rootb.mu.Unlock()
-		if bucketDeleted > 0 {
-			totalDeleted += bucketDeleted
-			table.addSize(uint64(bidx), -bucketDeleted)
-		}
-	}
-	if anyBucketEmptied {
-		m.resize(table, mapShrinkHint)
-	}
-	return totalDeleted
-}
-
 // Clear deletes all keys and values currently stored in the map.
 func (m *Map[K, V]) Clear() {
 	m.initOnce.Do(m.init)
@@ -1207,7 +907,7 @@ func appendToBucket[K comparable, V any](h2 uint8, e *entry[K, V], b *bucketPadd
 		}
 		if b.next == nil {
 			newb := new(bucketPadded)
-			newb.meta = setByte(0, h2, 0)
+			newb.meta = setByte(defaultMeta, h2, 0)
 			newb.entries[0] = unsafe.Pointer(e)
 			b.next = unsafe.Pointer(newb)
 			return
@@ -1217,7 +917,7 @@ func appendToBucket[K comparable, V any](h2 uint8, e *entry[K, V], b *bucketPadd
 }
 
 func (table *mapTable[K, V]) addSize(bucketIdx uint64, delta int) {
-	cidx := bucketIdx & uint64(len(table.size)-1)
+	cidx := uint64(len(table.size)-1) & bucketIdx
 	atomic.AddInt64(&table.size[cidx].c, int64(delta))
 }
 
@@ -1234,7 +934,7 @@ func h1(h uint64) uint64 {
 }
 
 func h2(h uint64) uint8 {
-	return 0x80 | uint8(h&0x7f)
+	return uint8(h & 0x7f)
 }
 
 // MapStats is Map statistics.
@@ -1352,12 +1052,20 @@ const (
 	cacheLineSize = 64
 )
 
-// nextPowOf2 computes the next highest power of 2 of 64-bit v.
-func nextPowOf2(v uint64) uint64 {
-	if v <= 1 {
+// nextPowOf2 computes the next highest power of 2 of 32-bit v.
+// Source: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
+func nextPowOf2(v uint32) uint32 {
+	if v == 0 {
 		return 1
 	}
-	return 1 << bits.Len64(v-1)
+	v--
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v++
+	return v
 }
 
 func parallelism() uint32 {

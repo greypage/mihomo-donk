@@ -3,15 +3,15 @@ package sudoku
 import (
 	"bufio"
 	"bytes"
-	"io"
+	crypto_rand "crypto/rand"
+	"encoding/binary"
+	"errors"
+	"math/rand"
 	"net"
 	"sync"
-	"sync/atomic"
 )
 
 const IOBufferSize = 32 * 1024
-
-const minDecodeReadSize = 64
 
 var perm4 = [24][4]byte{
 	{0, 1, 2, 3},
@@ -45,66 +45,49 @@ type Conn struct {
 	table      *Table
 	reader     *bufio.Reader
 	recorder   *bytes.Buffer
-	recording  atomic.Bool
+	recording  bool
 	recordLock sync.Mutex
 
 	rawBuf      []byte
-	pendingData pendingBuffer
-	hintBuf     [4]byte
-	hintCount   int
-	writeMu     sync.Mutex
-	writeBuf    []byte
+	pendingData []byte
+	hintBuf     []byte
 
-	rng              *sudokuRand
-	paddingThreshold uint64
-}
-
-func (sc *Conn) CloseWrite() error {
-	if sc == nil || sc.Conn == nil {
-		return nil
-	}
-	if cw, ok := sc.Conn.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
-	}
-	return nil
-}
-
-func (sc *Conn) CloseRead() error {
-	if sc == nil || sc.Conn == nil {
-		return nil
-	}
-	if cr, ok := sc.Conn.(interface{ CloseRead() error }); ok {
-		return cr.CloseRead()
-	}
-	return nil
+	rng         *rand.Rand
+	paddingRate float32
 }
 
 func NewConn(c net.Conn, table *Table, pMin, pMax int, record bool) *Conn {
-	localRng := newSeededRand()
+	var seedBytes [8]byte
+	if _, err := crypto_rand.Read(seedBytes[:]); err != nil {
+		binary.BigEndian.PutUint64(seedBytes[:], uint64(rand.Int63()))
+	}
+	seed := int64(binary.BigEndian.Uint64(seedBytes[:]))
+	localRng := rand.New(rand.NewSource(seed))
+
+	min := float32(pMin) / 100.0
+	rng := float32(pMax-pMin) / 100.0
+	rate := min + localRng.Float32()*rng
 
 	sc := &Conn{
-		Conn:             c,
-		table:            table,
-		reader:           bufio.NewReaderSize(c, IOBufferSize),
-		rawBuf:           make([]byte, IOBufferSize),
-		pendingData:      newPendingBuffer(4096),
-		writeBuf:         make([]byte, 0, 4096),
-		rng:              localRng,
-		paddingThreshold: pickPaddingThreshold(localRng, pMin, pMax),
+		Conn:        c,
+		table:       table,
+		reader:      bufio.NewReaderSize(c, IOBufferSize),
+		rawBuf:      make([]byte, IOBufferSize),
+		pendingData: make([]byte, 0, 4096),
+		hintBuf:     make([]byte, 0, 4),
+		rng:         localRng,
+		paddingRate: rate,
 	}
 	if record {
 		sc.recorder = new(bytes.Buffer)
-		sc.recording.Store(true)
+		sc.recording = true
 	}
 	return sc
 }
 
 func (sc *Conn) StopRecording() {
-	if sc == nil {
-		return
-	}
 	sc.recordLock.Lock()
-	sc.recording.Store(false)
+	sc.recording = false
 	sc.recorder = nil
 	sc.recordLock.Unlock()
 }
@@ -120,9 +103,6 @@ func (sc *Conn) GetBufferedAndRecorded() []byte {
 	var recorded []byte
 	if sc.recorder != nil {
 		recorded = sc.recorder.Bytes()
-	}
-	if sc.reader == nil {
-		return recorded
 	}
 
 	buffered := sc.reader.Buffered()
@@ -140,115 +120,93 @@ func (sc *Conn) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if sc == nil || sc.Conn == nil || sc.table == nil || sc.table.layout == nil || sc.rng == nil {
-		return 0, io.ErrClosedPipe
+
+	outCapacity := len(p) * 6
+	out := make([]byte, 0, outCapacity)
+	pads := sc.table.PaddingPool
+	padLen := len(pads)
+
+	for _, b := range p {
+		if sc.rng.Float32() < sc.paddingRate {
+			out = append(out, pads[sc.rng.Intn(padLen)])
+		}
+
+		puzzles := sc.table.EncodeTable[b]
+		puzzle := puzzles[sc.rng.Intn(len(puzzles))]
+
+		perm := perm4[sc.rng.Intn(len(perm4))]
+		for _, idx := range perm {
+			if sc.rng.Float32() < sc.paddingRate {
+				out = append(out, pads[sc.rng.Intn(padLen)])
+			}
+			out = append(out, puzzle[idx])
+		}
 	}
 
-	sc.writeMu.Lock()
-	defer sc.writeMu.Unlock()
+	if sc.rng.Float32() < sc.paddingRate {
+		out = append(out, pads[sc.rng.Intn(padLen)])
+	}
 
-	sc.writeBuf = encodeSudokuPayload(sc.writeBuf[:0], sc.table, sc.rng, sc.paddingThreshold, p)
-	return len(p), writeFull(sc.Conn, sc.writeBuf)
+	_, err = sc.Conn.Write(out)
+	return len(p), err
 }
 
 func (sc *Conn) Read(p []byte) (n int, err error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if sc == nil || sc.Conn == nil || sc.reader == nil || len(sc.rawBuf) == 0 || sc.table == nil || sc.table.layout == nil {
-		return 0, io.ErrClosedPipe
-	}
-	if n, ok := drainPending(p, &sc.pendingData); ok {
+	if len(sc.pendingData) > 0 {
+		n = copy(p, sc.pendingData)
+		if n == len(sc.pendingData) {
+			sc.pendingData = sc.pendingData[:0]
+		} else {
+			sc.pendingData = sc.pendingData[n:]
+		}
 		return n, nil
 	}
 
-	outN := 0
 	for {
-		nr, rErr := readRawLimited(sc.Conn, sc.reader, sc.rawBuf[:sudokuReadSize(len(p)-outN, len(sc.rawBuf))])
+		if len(sc.pendingData) > 0 {
+			break
+		}
+
+		nr, rErr := sc.reader.Read(sc.rawBuf)
 		if nr > 0 {
 			chunk := sc.rawBuf[:nr]
-			if sc.recording.Load() {
-				sc.recordLock.Lock()
-				if sc.recording.Load() && sc.recorder != nil {
-					sc.recorder.Write(chunk)
-				}
-				sc.recordLock.Unlock()
+			sc.recordLock.Lock()
+			if sc.recording {
+				sc.recorder.Write(chunk)
 			}
+			sc.recordLock.Unlock()
 
-			table := sc.table
-			layout := table.layout
-			for i := 0; i < len(chunk); {
-				if sc.hintCount == 0 && outN < len(p) && i+3 < len(chunk) &&
-					layout.hintTable[chunk[i]] &&
-					layout.hintTable[chunk[i+1]] &&
-					layout.hintTable[chunk[i+2]] &&
-					layout.hintTable[chunk[i+3]] {
-					val, ok := table.DecodeMap[packHintBytes(chunk[i], chunk[i+1], chunk[i+2], chunk[i+3])]
+			for _, b := range chunk {
+				if !sc.table.layout.isHint(b) {
+					continue
+				}
+
+				sc.hintBuf = append(sc.hintBuf, b)
+				if len(sc.hintBuf) == 4 {
+					key := packHintsToKey([4]byte{sc.hintBuf[0], sc.hintBuf[1], sc.hintBuf[2], sc.hintBuf[3]})
+					val, ok := sc.table.DecodeMap[key]
 					if !ok {
-						return 0, ErrInvalidSudokuMapMiss
+						return 0, errors.New("INVALID_SUDOKU_MAP_MISS")
 					}
-					p[outN] = val
-					outN++
-					i += 4
-					continue
+					sc.pendingData = append(sc.pendingData, val)
+					sc.hintBuf = sc.hintBuf[:0]
 				}
-
-				b := chunk[i]
-				i++
-				if !layout.hintTable[b] {
-					continue
-				}
-
-				sc.hintBuf[sc.hintCount] = b
-				sc.hintCount++
-				if sc.hintCount != len(sc.hintBuf) {
-					continue
-				}
-
-				val, ok := table.DecodeMap[packHintBytes(sc.hintBuf[0], sc.hintBuf[1], sc.hintBuf[2], sc.hintBuf[3])]
-				if !ok {
-					return 0, ErrInvalidSudokuMapMiss
-				}
-				outN = appendDecodedByte(p, outN, &sc.pendingData, val)
-				sc.hintCount = 0
 			}
 		}
 
 		if rErr != nil {
-			if outN > 0 {
-				return outN, nil
-			}
-			if n, ok := drainPending(p, &sc.pendingData); ok {
-				return n, nil
-			}
 			return 0, rErr
 		}
-		if outN > 0 {
-			return outN, nil
+		if len(sc.pendingData) > 0 {
+			break
 		}
 	}
-}
 
-func sudokuReadSize(decodedRemaining, maxRaw int) int {
-	if maxRaw <= minDecodeReadSize || decodedRemaining <= 0 {
-		return maxRaw
+	n = copy(p, sc.pendingData)
+	if n == len(sc.pendingData) {
+		sc.pendingData = sc.pendingData[:0]
+	} else {
+		sc.pendingData = sc.pendingData[n:]
 	}
-	if decodedRemaining > (maxRaw-minDecodeReadSize)/5 {
-		return maxRaw
-	}
-
-	return decodedRemaining*5 + minDecodeReadSize
-}
-
-func readRawLimited(conn net.Conn, reader *bufio.Reader, dst []byte) (int, error) {
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	if reader != nil && reader.Buffered() > 0 {
-		return reader.Read(dst)
-	}
-	if conn == nil {
-		return 0, io.ErrClosedPipe
-	}
-	return conn.Read(dst)
+	return n, nil
 }

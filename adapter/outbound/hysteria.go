@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/ech"
@@ -20,7 +19,7 @@ import (
 	"github.com/metacubex/mihomo/transport/hysteria/obfs"
 	"github.com/metacubex/mihomo/transport/hysteria/pmtud_fix"
 	"github.com/metacubex/mihomo/transport/hysteria/transport"
-	hyUtils "github.com/metacubex/mihomo/transport/hysteria/utils"
+	"github.com/metacubex/mihomo/transport/hysteria/utils"
 
 	"github.com/metacubex/tls"
 
@@ -70,7 +69,7 @@ func (h *Hysteria) ListenPacketContext(ctx context.Context, metadata *C.Metadata
 	return newPacketConn(&hyPacketConn{udpConn}, h), nil
 }
 
-func (h *Hysteria) genHdc(ctx context.Context) hyUtils.PacketDialer {
+func (h *Hysteria) genHdc(ctx context.Context) utils.PacketDialer {
 	return &hyDialerWithContext{
 		ctx: context.Background(),
 		hyDialer: func(network string, rAddr net.Addr) (net.PacketConn, error) {
@@ -129,12 +128,12 @@ type HysteriaOption struct {
 
 func (c *HysteriaOption) Speed() (uint64, uint64, error) {
 	var up, down uint64
-	up = utils.StringToBps(c.Up)
+	up = StringToBps(c.Up)
 	if up == 0 {
 		return 0, 0, fmt.Errorf("invaild upload speed: %s", c.Up)
 	}
 
-	down = utils.StringToBps(c.Down)
+	down = StringToBps(c.Down)
 	if down == 0 {
 		return 0, 0, fmt.Errorf("invaild download speed: %s", c.Down)
 	}
@@ -240,17 +239,17 @@ func NewHysteria(option HysteriaOption) (*Hysteria, error) {
 		return nil, fmt.Errorf("hysteria %s create error: %w", addr, err)
 	}
 	outbound := &Hysteria{
-		Base: NewBase(BaseOption{
-			Name:         option.Name,
-			Addr:         addr,
-			Type:         C.Hysteria,
-			ProviderName: option.ProviderName,
-			UDP:          true,
-			TFO:          option.FastOpen,
-			Interface:    option.Interface,
-			RoutingMark:  option.RoutingMark,
-			Prefer:       option.IPVersion,
-		}),
+		Base: &Base{
+			name:   option.Name,
+			addr:   addr,
+			tp:     C.Hysteria,
+			pdName: option.ProviderName,
+			udp:    true,
+			tfo:    option.FastOpen,
+			iface:  option.Interface,
+			rmark:  option.RoutingMark,
+			prefer: option.IPVersion,
+		},
 		option:    &option,
 		client:    client,
 		tlsConfig: tlsClientConfig,

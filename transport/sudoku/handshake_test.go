@@ -122,40 +122,34 @@ func runPackedTCPSession(id int, cfg *ProtocolConfig, errCh chan<- error) {
 	target := fmt.Sprintf("1.1.1.%d:80", (id%200)+1)
 	payload := []byte{0x42, byte(id)}
 
-	serverErr := make(chan error, 1)
+	// Server side
 	go func() {
-		c, meta, err := ServerHandshake(serverConn, cfg)
+		session, err := ServerHandshake(serverConn, cfg)
 		if err != nil {
-			serverErr <- fmt.Errorf("server handshake tcp: %w", err)
+			errCh <- fmt.Errorf("server handshake tcp: %w", err)
 			return
 		}
-		defer c.Close()
+		defer session.Conn.Close()
 
-		session, err := ReadServerSession(c, meta)
-		if err != nil {
-			serverErr <- fmt.Errorf("server read session tcp: %w", err)
-			return
-		}
 		if session.Type != SessionTypeTCP {
-			serverErr <- fmt.Errorf("unexpected session type: %v", session.Type)
+			errCh <- fmt.Errorf("unexpected session type: %v", session.Type)
 			return
 		}
 		if session.Target != target {
-			serverErr <- fmt.Errorf("target mismatch want %s got %s", target, session.Target)
+			errCh <- fmt.Errorf("target mismatch want %s got %s", target, session.Target)
 			return
 		}
 		if _, err := session.Conn.Write(payload); err != nil {
-			serverErr <- fmt.Errorf("server write: %w", err)
+			errCh <- fmt.Errorf("server write: %w", err)
 			return
 		}
-		serverErr <- nil
 	}()
 
+	// Client side
 	clientCfg := *cfg
 	cConn, err := ClientHandshake(clientConn, &clientCfg)
 	if err != nil {
 		errCh <- fmt.Errorf("client handshake tcp: %w", err)
-		_ = clientConn.Close()
 		return
 	}
 	defer cConn.Close()
@@ -165,8 +159,8 @@ func runPackedTCPSession(id int, cfg *ProtocolConfig, errCh chan<- error) {
 		errCh <- fmt.Errorf("encode address: %w", err)
 		return
 	}
-	if err := WriteKIPMessage(cConn, KIPTypeOpenTCP, addrBuf); err != nil {
-		errCh <- fmt.Errorf("client send open tcp: %w", err)
+	if _, err := cConn.Write(addrBuf); err != nil {
+		errCh <- fmt.Errorf("client send addr: %w", err)
 		return
 	}
 
@@ -179,7 +173,6 @@ func runPackedTCPSession(id int, cfg *ProtocolConfig, errCh chan<- error) {
 		errCh <- fmt.Errorf("payload mismatch want %x got %x", payload, buf)
 		return
 	}
-	reportPackedServerErr(serverErr, errCh)
 }
 
 func runPackedUoTSession(id int, cfg *ProtocolConfig, errCh chan<- error) {
@@ -187,42 +180,36 @@ func runPackedUoTSession(id int, cfg *ProtocolConfig, errCh chan<- error) {
 	target := "8.8.8.8:53"
 	payload := []byte{0xaa, byte(id)}
 
-	serverErr := make(chan error, 1)
+	// Server side
 	go func() {
-		c, meta, err := ServerHandshake(serverConn, cfg)
+		session, err := ServerHandshake(serverConn, cfg)
 		if err != nil {
-			serverErr <- fmt.Errorf("server handshake uot: %w", err)
+			errCh <- fmt.Errorf("server handshake uot: %w", err)
 			return
 		}
-		defer c.Close()
+		defer session.Conn.Close()
 
-		session, err := ReadServerSession(c, meta)
-		if err != nil {
-			serverErr <- fmt.Errorf("server read session uot: %w", err)
-			return
-		}
 		if session.Type != SessionTypeUoT {
-			serverErr <- fmt.Errorf("unexpected session type: %v", session.Type)
+			errCh <- fmt.Errorf("unexpected session type: %v", session.Type)
 			return
 		}
 		if err := WriteDatagram(session.Conn, target, payload); err != nil {
-			serverErr <- fmt.Errorf("server write datagram: %w", err)
+			errCh <- fmt.Errorf("server write datagram: %w", err)
 			return
 		}
-		serverErr <- nil
 	}()
 
+	// Client side
 	clientCfg := *cfg
 	cConn, err := ClientHandshake(clientConn, &clientCfg)
 	if err != nil {
 		errCh <- fmt.Errorf("client handshake uot: %w", err)
-		_ = clientConn.Close()
 		return
 	}
 	defer cConn.Close()
 
-	if err := WriteKIPMessage(cConn, KIPTypeStartUoT, nil); err != nil {
-		errCh <- fmt.Errorf("client start uot: %w", err)
+	if err := WritePreface(cConn); err != nil {
+		errCh <- fmt.Errorf("client write preface: %w", err)
 		return
 	}
 
@@ -238,17 +225,6 @@ func runPackedUoTSession(id int, cfg *ProtocolConfig, errCh chan<- error) {
 	if !bytes.Equal(data, payload) {
 		errCh <- fmt.Errorf("uot payload mismatch want %x got %x", payload, data)
 		return
-	}
-	reportPackedServerErr(serverErr, errCh)
-}
-
-func reportPackedServerErr(serverErr <-chan error, errCh chan<- error) {
-	select {
-	case err := <-serverErr:
-		if err != nil {
-			errCh <- err
-		}
-	default:
 	}
 }
 

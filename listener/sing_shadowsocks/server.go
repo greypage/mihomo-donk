@@ -15,7 +15,6 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
 	"github.com/metacubex/mihomo/transport/kcptun"
-	obfs "github.com/metacubex/mihomo/transport/simple-obfs"
 
 	shadowsocks "github.com/metacubex/sing-shadowsocks"
 	"github.com/metacubex/sing-shadowsocks/shadowaead"
@@ -35,7 +34,6 @@ type Listener struct {
 	udpListeners []net.PacketConn
 	service      shadowsocks.Service
 	shadowTLS    *shadowtls.Service
-	simpleObfs   func(net.Conn) net.Conn
 }
 
 var _listener *Listener
@@ -138,17 +136,6 @@ func New(config LC.ShadowsocksServer, tunnel C.Tunnel, additions ...inbound.Addi
 		sl.service = &shadowTLSService{
 			Service:   sl.service,
 			shadowTLS: shadowTLS,
-		}
-	}
-
-	if config.SimpleObfs.Enable {
-		switch config.SimpleObfs.Mode {
-		case "http":
-			sl.simpleObfs = obfs.NewHTTPObfsServer
-		case "tls":
-			sl.simpleObfs = obfs.NewTLSObfsServer
-		default:
-			return nil, fmt.Errorf("unsupported simple obfs mode: %s", config.SimpleObfs.Mode)
 		}
 	}
 
@@ -281,9 +268,6 @@ func (l *Listener) AddrList() (addrList []net.Addr) {
 
 func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	ctx := sing.WithAdditions(context.TODO(), additions...)
-	if l.simpleObfs != nil {
-		conn = l.simpleObfs(conn)
-	}
 	err := l.service.NewConnection(ctx, conn, M.Metadata{
 		Protocol: "shadowsocks",
 		Source:   M.SocksaddrFromNet(conn.RemoteAddr()),

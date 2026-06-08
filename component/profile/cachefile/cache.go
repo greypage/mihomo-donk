@@ -22,7 +22,6 @@ var (
 	bucketFakeip6          = []byte("fakeip6")
 	bucketETag             = []byte("etag")
 	bucketSubscriptionInfo = []byte("subscriptioninfo")
-	bucketStorage          = []byte("storage")
 )
 
 // CacheFile store and update the cache file

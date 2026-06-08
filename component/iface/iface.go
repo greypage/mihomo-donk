@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/common/singledo"
-	"github.com/metacubex/mihomo/component/iface/anet"
 
 	"github.com/metacubex/bart"
 )
@@ -36,7 +35,7 @@ var caches = singledo.NewSingle[*ifaceCache](time.Second * 20)
 
 func getCache() (*ifaceCache, error) {
 	value, err, _ := caches.Do(func() (*ifaceCache, error) {
-		ifaces, err := anet.Interfaces()
+		ifaces, err := net.Interfaces()
 		if err != nil {
 			return nil, err
 		}
@@ -47,7 +46,7 @@ func getCache() (*ifaceCache, error) {
 		}
 
 		for _, iface := range ifaces {
-			addrs, err := anet.InterfaceAddrsByInterface(&iface)
+			addrs, err := iface.Addrs()
 			if err != nil {
 				continue
 			}

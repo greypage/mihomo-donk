@@ -15,10 +15,9 @@ import (
 const Name = "mihomo"
 
 var (
-	GeositeName   = "GeoSite.dat"
-	GeoipName     = "GeoIP.dat"
-	ASNName       = "ASN.mmdb"
-	BundleMRSName = "BundleMRS.7z"
+	GeositeName = "GeoSite.dat"
+	GeoipName   = "GeoIP.dat"
+	ASNName     = "ASN.mmdb"
 )
 
 // Path is used to get the configuration path
@@ -86,7 +85,7 @@ func (p *path) Resolve(path string) string {
 
 // IsSafePath return true if path is a subpath of homedir (or in the SAFE_PATHS environment variable)
 func (p *path) IsSafePath(path string) bool {
-	if p.allowUnsafePath || features.CMFA {
+	if p.allowUnsafePath || features.Android {
 		return true
 	}
 	path = p.Resolve(path)
@@ -135,7 +134,8 @@ func (p *path) MMDB() string {
 		} else {
 			if strings.EqualFold(fi.Name(), "Country.mmdb") ||
 				strings.EqualFold(fi.Name(), "geoip.db") ||
-				strings.EqualFold(fi.Name(), "geoip.metadb") {
+				strings.EqualFold(fi.Name(), "geoip.metadb") ||
+				strings.EqualFold(fi.Name(), "GEOIP.metadb") {
 				GeoipName = fi.Name()
 				return P.Join(p.homeDir, fi.Name())
 			}
@@ -163,25 +163,6 @@ func (p *path) ASN() string {
 	return P.Join(p.homeDir, ASNName)
 }
 
-func (p *path) BundleMRS() string {
-	files, err := os.ReadDir(p.homeDir)
-	if err != nil {
-		return ""
-	}
-	for _, fi := range files {
-		if fi.IsDir() {
-			// 目录则直接跳过
-			continue
-		} else {
-			if strings.EqualFold(fi.Name(), "BundleMRS.7z") {
-				BundleMRSName = fi.Name()
-				return P.Join(p.homeDir, fi.Name())
-			}
-		}
-	}
-	return P.Join(p.homeDir, BundleMRSName)
-}
-
 func (p *path) OldCache() string {
 	return P.Join(p.homeDir, ".cache")
 }
@@ -200,7 +181,8 @@ func (p *path) GeoIP() string {
 			// 目录则直接跳过
 			continue
 		} else {
-			if strings.EqualFold(fi.Name(), "GeoIP.dat") {
+			if strings.EqualFold(fi.Name(), "GeoIP.dat") ||
+				strings.EqualFold(fi.Name(), "GEOIP.dat") {
 				GeoipName = fi.Name()
 				return P.Join(p.homeDir, fi.Name())
 			}
@@ -219,7 +201,8 @@ func (p *path) GeoSite() string {
 			// 目录则直接跳过
 			continue
 		} else {
-			if strings.EqualFold(fi.Name(), "GeoSite.dat") {
+			if strings.EqualFold(fi.Name(), "GeoSite.dat") ||
+				strings.EqualFold(fi.Name(), "GEOSITE.dat") {
 				GeositeName = fi.Name()
 				return P.Join(p.homeDir, fi.Name())
 			}

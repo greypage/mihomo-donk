@@ -10,7 +10,6 @@ import (
 )
 
 type ResolverEnhancer struct {
-	ipv6          bool
 	mode          C.DNSMode
 	fakeIPPool    *fakeip.Pool
 	fakeIPPool6   *fakeip.Pool
@@ -170,7 +169,6 @@ type EnhancerConfig struct {
 
 func NewEnhancer(cfg EnhancerConfig) *ResolverEnhancer {
 	e := &ResolverEnhancer{
-		ipv6:     cfg.IPv6,
 		mode:     cfg.EnhancedMode,
 		useHosts: cfg.UseHosts,
 	}

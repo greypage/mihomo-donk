@@ -21,7 +21,6 @@ const (
 	RejectDrop
 	Compatible
 	Pass
-	PassRule
 	Dns
 
 	Relay
@@ -46,11 +45,6 @@ const (
 	Mieru
 	AnyTLS
 	Sudoku
-	Masque
-	TrustTunnel
-	OpenVPN
-	Tailscale
-	GostRelay
 )
 
 const (
@@ -58,8 +52,9 @@ const (
 	DefaultUDPTimeout = dialer.DefaultUDPTimeout
 	DefaultDropTime   = 12 * DefaultTCPTimeout
 	DefaultTLSTimeout = DefaultTCPTimeout
-	DefaultTestURL    = "https://www.gstatic.com/generate_204"
 )
+
+var DefaultTestURL = "https://www.gstatic.com/generate_204"
 
 var ErrNotSupport = errors.New("no support")
 
@@ -184,8 +179,6 @@ func (at AdapterType) String() string {
 		return "Compatible"
 	case Pass:
 		return "Pass"
-	case PassRule:
-		return "PassRule"
 	case Dns:
 		return "Dns"
 	case Shadowsocks:
@@ -220,16 +213,6 @@ func (at AdapterType) String() string {
 		return "AnyTLS"
 	case Sudoku:
 		return "Sudoku"
-	case Masque:
-		return "Masque"
-	case TrustTunnel:
-		return "TrustTunnel"
-	case OpenVPN:
-		return "OpenVPN"
-	case Tailscale:
-		return "Tailscale"
-	case GostRelay:
-		return "GostRelay"
 	case Relay:
 		return "Relay"
 	case Selector:

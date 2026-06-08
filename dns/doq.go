@@ -5,15 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"runtime"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/metacubex/mihomo/common/contextutils"
-	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/component/ca"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/log"
@@ -57,6 +54,11 @@ type dnsOverQUIC struct {
 	// re-opened when needed.
 	conn   *quic.Conn
 	connMu sync.RWMutex
+
+	// bytesPool is a *sync.Pool we use to store byte buffers in.  These byte
+	// buffers are used to read responses from the upstream.
+	bytesPool      *sync.Pool
+	bytesPoolGuard sync.Mutex
 
 	addr           string
 	dialer         *dnsDialer
@@ -114,7 +116,7 @@ func (doq *dnsOverQUIC) ExchangeContext(ctx context.Context, m *D.Msg) (msg *D.M
 	// make DoQ usable.  We need to make 2 attempts in the case when the
 	// connection was closed (due to inactivity for example) AND the server
 	// refuses to open a 0-RTT connection.
-	for i := 0; hasConnection && doq.shouldRetry(err) && ctx.Err() == nil && i < 2; i++ {
+	for i := 0; hasConnection && doq.shouldRetry(err) && i < 2; i++ {
 		log.Debugln("re-creating the QUIC connection and retrying due to %v", err)
 
 		// Close the active connection to make sure we'll try to re-connect.
@@ -154,25 +156,16 @@ func (doq *dnsOverQUIC) ResetConnection() {
 // exchangeQUIC attempts to open a QUIC connection, send the DNS message
 // through it and return the response it got from the server.
 func (doq *dnsOverQUIC) exchangeQUIC(ctx context.Context, msg *D.Msg) (resp *D.Msg, err error) {
-	// All DNS messages (queries and responses) sent over DoQ connections MUST
-	// be encoded as a 2-octet length field followed by the message content as
-	// specified in [RFC1035].
-	// Note: we do not support receiving multiple messages over a single connection.
-	buf := pool.Get(2 + MaxMsgSize)
-	defer pool.Put(buf)
-	b, err := msg.PackBuffer(buf[2:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to pack DNS message for DoQ: %w", err)
-	}
-	if len(b) > MaxMsgSize {
-		return nil, fmt.Errorf("DNS message is too large: %d > %d", len(b), MaxMsgSize)
-	}
-	binary.BigEndian.PutUint16(buf, uint16(len(b)))
-
 	var conn *quic.Conn
 	conn, err = doq.getConnection(ctx, true)
 	if err != nil {
 		return nil, err
+	}
+
+	var buf []byte
+	buf, err = msg.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("failed to pack DNS message for DoQ: %w", err)
 	}
 
 	var stream *quic.Stream
@@ -181,12 +174,7 @@ func (doq *dnsOverQUIC) exchangeQUIC(ctx context.Context, msg *D.Msg) (resp *D.M
 		return nil, err
 	}
 
-	stop := contextutils.AfterFunc(ctx, func() {
-		_ = stream.SetDeadline(time.Now()) // cancel any read or write operation on this stream
-	})
-	defer stop()
-
-	_, err = stream.Write(buf[:2+len(b)])
+	_, err = stream.Write(AddPrefix(buf))
 	if err != nil {
 		return nil, fmt.Errorf("failed to write to a QUIC stream: %w", err)
 	}
@@ -197,37 +185,40 @@ func (doq *dnsOverQUIC) exchangeQUIC(ctx context.Context, msg *D.Msg) (resp *D.M
 	// write-direction of the stream, but does not prevent reading from it.
 	_ = stream.Close()
 
-	// -- reading the response ---
-	var respLen uint16
-	err = binary.Read(stream, binary.BigEndian, &respLen)
-	if err != nil {
-		return nil, fmt.Errorf("reading response length from %s: %w", doq.Address(), err)
-	}
-	if respLen == 0 {
-		return nil, fmt.Errorf("received empty response from %s", doq.Address())
-	}
-	if respLen > MaxMsgSize {
-		return nil, fmt.Errorf("received response that is too large: %d > %d", respLen, MaxMsgSize)
-	}
+	return doq.readMsg(stream)
+}
 
-	_, err = io.ReadFull(stream, buf[:respLen])
-	if err != nil {
-		return nil, fmt.Errorf("reading response from %s: %w", doq.Address(), err)
-	}
+// AddPrefix adds a 2-byte prefix with the DNS message length.
+func AddPrefix(b []byte) (m []byte) {
+	m = make([]byte, 2+len(b))
+	binary.BigEndian.PutUint16(m, uint16(len(b)))
+	copy(m[2:], b)
 
-	resp = new(D.Msg)
-	err = resp.Unpack(buf[:respLen])
-	if err != nil {
-		return nil, fmt.Errorf("unpacking response from %s: %w", doq.Address(), err)
-	}
-
-	return resp, nil
+	return m
 }
 
 // shouldRetry checks what error we received and decides whether it is required
 // to re-open the connection and retry sending the request.
 func (doq *dnsOverQUIC) shouldRetry(err error) (ok bool) {
 	return isQUICRetryError(err)
+}
+
+// getBytesPool returns (creates if needed) a pool we store byte buffers in.
+func (doq *dnsOverQUIC) getBytesPool() (pool *sync.Pool) {
+	doq.bytesPoolGuard.Lock()
+	defer doq.bytesPoolGuard.Unlock()
+
+	if doq.bytesPool == nil {
+		doq.bytesPool = &sync.Pool{
+			New: func() interface{} {
+				b := make([]byte, MaxMsgSize)
+
+				return &b
+			},
+		}
+	}
+
+	return doq.bytesPool
 }
 
 // getConnection opens or returns an existing *quic.Conn. useCached
@@ -310,7 +301,7 @@ func (doq *dnsOverQUIC) openStream(ctx context.Context, conn *quic.Conn) (*quic.
 }
 
 // openConnection opens a new QUIC connection.
-func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn, err error) {
+func (doq *dnsOverQUIC) openConnection(ctx context.Context) (conn *quic.Conn, err error) {
 	// we're using bootstrapped address instead of what's passed to the function
 	// it does not create an actual connection, but it helps us determine
 	// what IP is actually reachable (when there're v4/v6 addresses).
@@ -329,7 +320,7 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn
 
 	p, err := strconv.Atoi(port)
 	udpAddr := net.UDPAddr{IP: net.ParseIP(ip), Port: p}
-	packetConn, err := doq.dialer.ListenPacket(ctx, "udp", addr)
+	udp, err := doq.dialer.ListenPacket(ctx, "udp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -353,16 +344,15 @@ func (doq *dnsOverQUIC) openConnection(ctx context.Context) (quicConn *quic.Conn
 		return nil, err
 	}
 
-	transport := quic.Transport{Conn: packetConn}
+	transport := quic.Transport{Conn: udp}
 	transport.SetCreatedConn(true) // auto close conn
 	transport.SetSingleUse(true)   // auto close transport
-	quicConn, err = transport.Dial(ctx, &udpAddr, tlsConfig, doq.getQUICConfig())
+	conn, err = transport.Dial(ctx, &udpAddr, tlsConfig, doq.getQUICConfig())
 	if err != nil {
-		_ = packetConn.Close()
 		return nil, fmt.Errorf("opening quic connection to %s: %w", doq.addr, err)
 	}
 
-	return quicConn, nil
+	return conn, nil
 }
 
 // closeConnWithError closes the active connection with error to make sure that
@@ -392,6 +382,33 @@ func (doq *dnsOverQUIC) closeConnWithError(err error) {
 		log.Errorln("failed to close the conn: %v", err)
 	}
 	doq.conn = nil
+}
+
+// readMsg reads the incoming DNS message from the QUIC stream.
+func (doq *dnsOverQUIC) readMsg(stream *quic.Stream) (m *D.Msg, err error) {
+	pool := doq.getBytesPool()
+	bufPtr := pool.Get().(*[]byte)
+
+	defer pool.Put(bufPtr)
+
+	respBuf := *bufPtr
+	n, err := stream.Read(respBuf)
+	if err != nil && n == 0 {
+		return nil, fmt.Errorf("reading response from %s: %w", doq.Address(), err)
+	}
+
+	// All DNS messages (queries and responses) sent over DoQ connections MUST
+	// be encoded as a 2-octet length field followed by the message content as
+	// specified in [RFC1035].
+	// IMPORTANT: Note, that we ignore this prefix here as this implementation
+	// does not support receiving multiple messages over a single connection.
+	m = new(D.Msg)
+	err = m.Unpack(respBuf[2:])
+	if err != nil {
+		return nil, fmt.Errorf("unpacking response from %s: %w", doq.Address(), err)
+	}
+
+	return m, nil
 }
 
 // newQUICTokenStore creates a new quic.TokenStore that is necessary to have

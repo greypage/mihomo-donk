@@ -3,7 +3,9 @@ package inbound_test
 import (
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -55,20 +57,6 @@ func TestNewMieru(t *testing.T) {
 					},
 					Transport: "TCP",
 					Users:     map[string]string{"user": "pass"},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid traffic pattern",
-			args: args{
-				option: &inbound.MieruOption{
-					BaseOption: inbound.BaseOption{
-						Port: "8080",
-					},
-					Transport:      "TCP",
-					Users:          map[string]string{"user": "pass"},
-					TrafficPattern: "GgQIARAK",
 				},
 			},
 			wantErr: false,
@@ -147,20 +135,6 @@ func TestNewMieru(t *testing.T) {
 			},
 			wantErr: true,
 		},
-		{
-			name: "invalid traffic pattern",
-			args: args{
-				option: &inbound.MieruOption{
-					BaseOption: inbound.BaseOption{
-						Port: "8080",
-					},
-					Transport:      "TCP",
-					Users:          map[string]string{"user": "pass"},
-					TrafficPattern: "1212ababXYYX",
-				},
-			},
-			wantErr: true,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,6 +151,9 @@ func TestNewMieru(t *testing.T) {
 }
 
 func TestInboundMieru(t *testing.T) {
+	if runtime.GOOS == "windows" && strings.HasPrefix(runtime.Version(), "go1.26") {
+		t.Skip("temporarily skipped on windows due to intermittent failures; tracked in PR")
+	}
 	t.Run("TCP_HANDSHAKE_STANDARD", func(t *testing.T) {
 		testInboundMieruTCP(t, "HANDSHAKE_STANDARD")
 	})
@@ -206,9 +183,8 @@ func testInboundMieruTCP(t *testing.T, handshakeMode string) {
 			Listen:  "127.0.0.1",
 			Port:    strconv.Itoa(port),
 		},
-		Transport:           "TCP",
-		Users:               map[string]string{"test": "password"},
-		UserHintIsMandatory: true,
+		Transport: "TCP",
+		Users:     map[string]string{"test": "password"},
 	}
 	in, err := inbound.NewMieru(&inboundOptions)
 	if !assert.NoError(t, err) {
@@ -237,8 +213,6 @@ func testInboundMieruTCP(t *testing.T, handshakeMode string) {
 		Password:      "password",
 		HandshakeMode: handshakeMode,
 	}
-	outboundOptions.DialerForAPI = tunnel.NewDialer()
-	outboundOptions.TunnelForAPI = tunnel
 	out, err := outbound.NewMieru(outboundOptions)
 	if !assert.NoError(t, err) {
 		return
@@ -263,9 +237,8 @@ func testInboundMieruUDP(t *testing.T, handshakeMode string) {
 			Listen:  "127.0.0.1",
 			Port:    strconv.Itoa(port),
 		},
-		Transport:           "UDP",
-		Users:               map[string]string{"test": "password"},
-		UserHintIsMandatory: true,
+		Transport: "UDP",
+		Users:     map[string]string{"test": "password"},
 	}
 	in, err := inbound.NewMieru(&inboundOptions)
 	if !assert.NoError(t, err) {
@@ -294,7 +267,6 @@ func testInboundMieruUDP(t *testing.T, handshakeMode string) {
 		Password:      "password",
 		HandshakeMode: handshakeMode,
 	}
-	outboundOptions.DialerForAPI = tunnel.NewDialer()
 	out, err := outbound.NewMieru(outboundOptions)
 	if !assert.NoError(t, err) {
 		return

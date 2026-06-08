@@ -136,7 +136,7 @@ type PacketConn struct {
 }
 
 func (pc *PacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
-	return WritePacket(pc, socks5.ParseAddrToSocksAddr(addr), b)
+	return WritePacket(pc, socks5.ParseAddr(addr.String()), b)
 }
 
 func (pc *PacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
@@ -202,12 +202,6 @@ func (pc *PacketConn) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
 		return nil, nil, nil, err
 	}
 	length := binary.BigEndian.Uint16(data)
-	if length > maxLength {
-		if put != nil {
-			put()
-		}
-		return nil, nil, nil, errors.New("packet invalid")
-	}
 
 	if length > 0 {
 		data = data[:length]

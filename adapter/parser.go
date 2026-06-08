@@ -18,7 +18,6 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	opt := applyProxyOptions(options...)
 	basicOption := outbound.BasicOption{
 		DialerForAPI: opt.DialerForAPI,
-		TunnelForAPI: opt.TunnelForAPI,
 		ProviderName: opt.ProviderName,
 	}
 
@@ -111,13 +110,6 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 			break
 		}
 		proxy, err = outbound.NewTuic(*tuicOption)
-	case "gost-relay":
-		relayOption := &outbound.GostRelayOption{BasicOption: basicOption}
-		err = decoder.Decode(mapping, relayOption)
-		if err != nil {
-			break
-		}
-		proxy, err = outbound.NewGostRelay(*relayOption)
 	case "direct":
 		directOption := &outbound.DirectOption{BasicOption: basicOption}
 		err = decoder.Decode(mapping, directOption)
@@ -167,34 +159,6 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 			break
 		}
 		proxy, err = outbound.NewSudoku(*sudokuOption)
-	case "masque":
-		masqueOption := &outbound.MasqueOption{BasicOption: basicOption}
-		err = decoder.Decode(mapping, masqueOption)
-		if err != nil {
-			break
-		}
-		proxy, err = outbound.NewMasque(*masqueOption)
-	case "trusttunnel":
-		trustTunnelOption := &outbound.TrustTunnelOption{BasicOption: basicOption}
-		err = decoder.Decode(mapping, trustTunnelOption)
-		if err != nil {
-			break
-		}
-		proxy, err = outbound.NewTrustTunnel(*trustTunnelOption)
-	case "openvpn":
-		openVPNOption := &outbound.OpenVPNOption{BasicOption: basicOption}
-		err = decoder.Decode(mapping, openVPNOption)
-		if err != nil {
-			break
-		}
-		proxy, err = outbound.NewOpenVPN(*openVPNOption)
-	case "tailscale":
-		tailscaleOption := &outbound.TailscaleOption{BasicOption: basicOption}
-		err = decoder.Decode(mapping, tailscaleOption)
-		if err != nil {
-			break
-		}
-		proxy, err = outbound.NewTailscale(*tailscaleOption)
 	default:
 		return nil, fmt.Errorf("unsupport proxy type: %s", proxyType)
 	}
@@ -223,7 +187,6 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 
 type proxyOption struct {
 	DialerForAPI C.Dialer
-	TunnelForAPI C.Tunnel
 	ProviderName string
 }
 
@@ -240,12 +203,6 @@ type ProxyOption func(opt *proxyOption)
 func WithDialerForAPI(dialer C.Dialer) ProxyOption {
 	return func(opt *proxyOption) {
 		opt.DialerForAPI = dialer
-	}
-}
-
-func WithTunnelForAPI(tunnel C.Tunnel) ProxyOption {
-	return func(opt *proxyOption) {
-		opt.TunnelForAPI = tunnel
 	}
 }
 

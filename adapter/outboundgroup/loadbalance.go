@@ -27,6 +27,8 @@ type LoadBalance struct {
 	strategyFn     strategyFn
 	testUrl        string
 	expectedStatus string
+	Hidden         bool
+	Icon           string
 }
 
 var errStrategy = errors.New("unsupported strategy")
@@ -232,9 +234,8 @@ func (lb *LoadBalance) MarshalJSON() ([]byte, error) {
 		"all":            all,
 		"testUrl":        lb.testUrl,
 		"expectedStatus": lb.expectedStatus,
-		"hidden":         lb.Hidden(),
-		"icon":           lb.Icon(),
-		"emptyFallback":  lb.EmptyFallback().Name(),
+		"hidden":         lb.Hidden,
+		"icon":           lb.Icon,
 	})
 }
 
@@ -250,7 +251,7 @@ func (lb *LoadBalance) Now() string {
 	return ""
 }
 
-func NewLoadBalance(option *GroupCommonOption, emptyFallback C.Proxy, providers []P.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
+func NewLoadBalance(option *GroupCommonOption, providers []P.ProxyProvider, strategy string) (lb *LoadBalance, err error) {
 	var strategyFn strategyFn
 	switch strategy {
 	case "consistent-hashing":
@@ -266,19 +267,18 @@ func NewLoadBalance(option *GroupCommonOption, emptyFallback C.Proxy, providers 
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
 			Type:           C.LoadBalance,
-			Hidden:         option.Hidden,
-			Icon:           option.Icon,
 			Filter:         option.Filter,
 			ExcludeFilter:  option.ExcludeFilter,
 			ExcludeType:    option.ExcludeType,
 			TestTimeout:    option.TestTimeout,
 			MaxFailedTimes: option.MaxFailedTimes,
-			EmptyFallback:  emptyFallback,
 			Providers:      providers,
 		}),
 		strategyFn:     strategyFn,
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
+		Hidden:         option.Hidden,
+		Icon:           option.Icon,
 	}, nil
 }

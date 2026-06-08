@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/component/pool"
@@ -44,15 +45,27 @@ func (p *Pool) put(conn *Snell) {
 type PoolConn struct {
 	*Snell
 	pool           *Pool
-	closeWriteOnce sync.Once
-	closeWriteErr  error
+	readClosed     atomic.Bool
+	writeClosed    atomic.Bool
 	closeOnce      sync.Once
 	closeErr       error
+	closeWriteOnce sync.Once
+	closeWriteErr  error
 }
 
 func (pc *PoolConn) Read(b []byte) (int, error) {
+	// save old status of reply (it mutable by Read)
+	reply := pc.Snell.reply
+
 	n, err := pc.Snell.Read(b)
 	if err == shadowaead.ErrZeroChunk {
+		// if reply is false, it should be client halfclose.
+		// ignore error and read data again.
+		if !reply {
+			pc.Snell.reply = false
+			return pc.Snell.Read(b)
+		}
+		pc.readClosed.Store(true)
 		return n, io.EOF
 	}
 	return n, err
@@ -64,22 +77,33 @@ func (pc *PoolConn) Write(b []byte) (int, error) {
 
 func (pc *PoolConn) CloseWrite() error {
 	pc.closeWriteOnce.Do(func() {
-		pc.closeWriteErr = writeZeroChunk(pc.Snell)
+		_, pc.closeWriteErr = pc.Snell.Write(endSignal)
+		if pc.closeWriteErr == nil {
+			pc.writeClosed.Store(true)
+		}
 	})
 	return pc.closeWriteErr
 }
 
 func (pc *PoolConn) Close() error {
 	pc.closeOnce.Do(func() {
-		if err := pc.CloseWrite(); err != nil {
-			pc.closeErr = err
+		// mihomo use SetReadDeadline to break bidirectional copy between client and server.
+		// reset it before reuse connection to avoid io timeout error.
+		_ = pc.Snell.Conn.SetReadDeadline(time.Time{})
+
+		if !pc.writeClosed.Load() {
+			if err := pc.CloseWrite(); err != nil {
+				pc.closeErr = err
+				_ = pc.Snell.Close()
+				return
+			}
+		}
+
+		if !pc.readClosed.Load() {
 			_ = pc.Snell.Close()
 			return
 		}
 
-		// mihomo use SetReadDeadline to break bidirectional copy between client and server.
-		// reset it before reuse connection to avoid io timeout error.
-		_ = pc.Snell.Conn.SetReadDeadline(time.Time{})
 		pc.Snell.reply = false
 		pc.pool.put(pc.Snell)
 	})

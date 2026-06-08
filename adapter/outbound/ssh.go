@@ -15,7 +15,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/randv2"
-	"github.com/metacubex/ssh"
+	"golang.org/x/crypto/ssh"
 )
 
 type Ssh struct {
@@ -182,18 +182,16 @@ func NewSsh(option SshOption) (*Ssh, error) {
 	config.ClientVersion = version
 
 	outbound := &Ssh{
-		Base: NewBase(BaseOption{
-			Name:         option.Name,
-			Addr:         addr,
-			Type:         C.Ssh,
-			ProviderName: option.ProviderName,
-			UDP:          false,
-			TFO:          option.TFO,
-			MPTCP:        option.MPTCP,
-			Interface:    option.Interface,
-			RoutingMark:  option.RoutingMark,
-			Prefer:       option.IPVersion,
-		}),
+		Base: &Base{
+			name:   option.Name,
+			addr:   addr,
+			tp:     C.Ssh,
+			pdName: option.ProviderName,
+			udp:    false,
+			iface:  option.Interface,
+			rmark:  option.RoutingMark,
+			prefer: option.IPVersion,
+		},
 		option: &option,
 		config: &config,
 	}

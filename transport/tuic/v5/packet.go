@@ -9,7 +9,7 @@ import (
 	"github.com/metacubex/mihomo/common/atomic"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/pool"
-	"github.com/metacubex/mihomo/transport/tuic/types"
+	"github.com/metacubex/mihomo/transport/tuic/common"
 
 	"github.com/metacubex/quic-go"
 	"github.com/metacubex/randv2"
@@ -20,7 +20,7 @@ type quicStreamPacketConn struct {
 	quicConn  *quic.Conn
 	inputConn *N.BufferedConn
 
-	udpRelayMode          types.UdpRelayMode
+	udpRelayMode          common.UdpRelayMode
 	maxUdpRelayPacketSize int
 
 	deferQuicConnFn func(quicConn *quic.Conn, err error)
@@ -160,7 +160,7 @@ func (q *quicStreamPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err erro
 	pktId := uint16(randv2.Uint32())
 	packet := NewPacket(q.connId, pktId, 1, 0, uint16(len(p)), address, p)
 	switch q.udpRelayMode {
-	case types.QUIC:
+	case common.QUIC:
 		err = packet.WriteTo(buf)
 		if err != nil {
 			return

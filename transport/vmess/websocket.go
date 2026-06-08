@@ -39,9 +39,11 @@ type websocketConn struct {
 }
 
 type websocketWithEarlyDataConn struct {
-	conn     N.ExtendedConn
+	net.Conn
+	wsWriter N.ExtendedWriter
 	underlay net.Conn
-	dialed   chan struct{}
+	closed   bool
+	dialed   chan bool
 	cancel   context.CancelFunc
 	ctx      context.Context
 	config   *WebsocketConfig
@@ -173,7 +175,7 @@ func (wsc *websocketConn) Close() error {
 	return nil
 }
 
-func (wsedc *websocketWithEarlyDataConn) dial(earlyData []byte) error {
+func (wsedc *websocketWithEarlyDataConn) Dial(earlyData []byte) error {
 	base64DataBuf := &bytes.Buffer{}
 	base64EarlyDataEncoder := base64.NewEncoder(base64.RawURLEncoding, base64DataBuf)
 
@@ -182,88 +184,88 @@ func (wsedc *websocketWithEarlyDataConn) dial(earlyData []byte) error {
 		return fmt.Errorf("failed to encode early data: %w", err)
 	}
 
-	if err := base64EarlyDataEncoder.Close(); err != nil {
-		return fmt.Errorf("failed to encode early data tail: %w", err)
+	if errc := base64EarlyDataEncoder.Close(); errc != nil {
+		return fmt.Errorf("failed to encode early data tail: %w", errc)
 	}
 
-	conn, err := streamWebsocketConn(wsedc.ctx, wsedc.underlay, wsedc.config, base64DataBuf)
-	if err != nil {
-		_ = wsedc.Close()
+	var err error
+	if wsedc.Conn, err = streamWebsocketConn(wsedc.ctx, wsedc.underlay, wsedc.config, base64DataBuf); err != nil {
+		wsedc.Close()
 		return fmt.Errorf("failed to dial WebSocket: %w", err)
 	}
 
-	wsedc.conn = N.NewExtendedConn(conn)
-	close(wsedc.dialed)
+	wsedc.dialed <- true
+	wsedc.wsWriter = N.NewExtendedWriter(wsedc.Conn)
 	if earlyDataBuf.Len() != 0 {
-		_, err = wsedc.conn.Write(earlyDataBuf.Bytes())
+		_, err = wsedc.Conn.Write(earlyDataBuf.Bytes())
 	}
 
 	return err
 }
 
 func (wsedc *websocketWithEarlyDataConn) Write(b []byte) (int, error) {
-	select {
-	case <-wsedc.ctx.Done():
+	if wsedc.closed {
 		return 0, io.ErrClosedPipe
-	case <-wsedc.dialed:
-		return wsedc.conn.Write(b)
-	default:
-		if err := wsedc.dial(b); err != nil {
+	}
+	if wsedc.Conn == nil {
+		if err := wsedc.Dial(b); err != nil {
 			return 0, err
 		}
 		return len(b), nil
 	}
+
+	return wsedc.Conn.Write(b)
 }
 
 func (wsedc *websocketWithEarlyDataConn) WriteBuffer(buffer *buf.Buffer) error {
-	select {
-	case <-wsedc.ctx.Done():
+	if wsedc.closed {
 		return io.ErrClosedPipe
-	case <-wsedc.dialed:
-		return wsedc.conn.WriteBuffer(buffer)
-	default:
-		if err := wsedc.dial(buffer.Bytes()); err != nil {
+	}
+	if wsedc.Conn == nil {
+		if err := wsedc.Dial(buffer.Bytes()); err != nil {
 			return err
 		}
 		return nil
 	}
+
+	return wsedc.wsWriter.WriteBuffer(buffer)
 }
 
 func (wsedc *websocketWithEarlyDataConn) Read(b []byte) (int, error) {
-	select {
-	case <-wsedc.ctx.Done():
+	if wsedc.closed {
 		return 0, io.ErrClosedPipe
-	case <-wsedc.dialed:
-		return wsedc.conn.Read(b)
 	}
+	if wsedc.Conn == nil {
+		select {
+		case <-wsedc.ctx.Done():
+			return 0, io.ErrUnexpectedEOF
+		case <-wsedc.dialed:
+		}
+	}
+	return wsedc.Conn.Read(b)
 }
 
 func (wsedc *websocketWithEarlyDataConn) Close() error {
+	wsedc.closed = true
 	wsedc.cancel()
-	select {
-	case <-wsedc.dialed:
-		return wsedc.conn.Close()
-	default:
+	if wsedc.Conn == nil { // is dialing or not dialed
 		return wsedc.underlay.Close()
 	}
+	return wsedc.Conn.Close()
 }
 
 func (wsedc *websocketWithEarlyDataConn) LocalAddr() net.Addr {
-	select {
-	case <-wsedc.dialed:
-		return wsedc.conn.LocalAddr()
-	default:
+	if wsedc.Conn == nil {
 		return wsedc.underlay.LocalAddr()
 	}
+	return wsedc.Conn.LocalAddr()
 }
 
 func (wsedc *websocketWithEarlyDataConn) RemoteAddr() net.Addr {
-	select {
-	case <-wsedc.dialed:
-		return wsedc.conn.RemoteAddr()
-	default:
+	if wsedc.Conn == nil {
 		return wsedc.underlay.RemoteAddr()
 	}
+	return wsedc.Conn.RemoteAddr()
 }
 
 func (wsedc *websocketWithEarlyDataConn) SetDeadline(t time.Time) error {
@@ -274,21 +276,17 @@ func (wsedc *websocketWithEarlyDataConn) SetDeadline(t time.Time) error {
 }
 
 func (wsedc *websocketWithEarlyDataConn) SetReadDeadline(t time.Time) error {
-	select {
-	case <-wsedc.dialed:
-		return wsedc.conn.SetReadDeadline(t)
-	default:
+	if wsedc.Conn == nil {
 		return nil
 	}
+	return wsedc.Conn.SetReadDeadline(t)
 }
 
 func (wsedc *websocketWithEarlyDataConn) SetWriteDeadline(t time.Time) error {
-	select {
-	case <-wsedc.dialed:
-		return wsedc.conn.SetWriteDeadline(t)
-	default:
+	if wsedc.Conn == nil {
 		return nil
 	}
+	return wsedc.Conn.SetWriteDeadline(t)
 }
 
 func (wsedc *websocketWithEarlyDataConn) FrontHeadroom() int {
@@ -311,18 +309,13 @@ func (wsedc *websocketWithEarlyDataConn) Upstream() any {
 //}
 
 func (wsedc *websocketWithEarlyDataConn) NeedHandshake() bool {
-	select {
-	case <-wsedc.dialed:
-		return false
-	default:
-		return true
-	}
+	return wsedc.Conn == nil
 }
 
 func streamWebsocketWithEarlyDataConn(conn net.Conn, c *WebsocketConfig) (net.Conn, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn = &websocketWithEarlyDataConn{
-		dialed:   make(chan struct{}),
+		dialed:   make(chan bool, 1),
 		cancel:   cancel,
 		ctx:      ctx,
 		underlay: conn,

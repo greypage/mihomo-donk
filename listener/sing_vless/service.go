@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 
-	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/transport/vless"
 	"github.com/metacubex/mihomo/transport/vless/vision"
 
@@ -45,7 +44,10 @@ func (s *Service[T]) UpdateUsers(userList []T, userUUIDList []string, userFlowLi
 	userMap := make(map[[16]byte]T)
 	userFlowMap := make(map[T]string)
 	for i, userName := range userList {
-		userID := utils.UUIDMap(userUUIDList[i])
+		userID, err := uuid.FromString(userUUIDList[i])
+		if err != nil {
+			userID = uuid.NewV5(uuid.Nil, userUUIDList[i])
+		}
 		userMap[userID] = userName
 		userFlowMap[userName] = userFlowList[i]
 	}

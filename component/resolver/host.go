@@ -8,6 +8,7 @@ import (
 	"strings"
 	_ "unsafe"
 
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/resolver/hosts"
 	"github.com/metacubex/mihomo/component/trie"
 	"github.com/metacubex/randv2"
@@ -65,35 +66,37 @@ type HostValue struct {
 	Domain   string
 }
 
-func NewHostValue(value []string) (HostValue, error) {
+func NewHostValue(value any) (HostValue, error) {
 	isDomain := true
-	ips := make([]netip.Addr, 0, len(value))
+	ips := make([]netip.Addr, 0)
 	domain := ""
-	switch len(value) {
-	case 0:
-		return HostValue{}, errors.New("value is empty")
-	case 1:
-		host := value[0]
-		if ip, err := netip.ParseAddr(host); err == nil {
-			ips = append(ips, ip.Unmap())
+	if valueArr, err := utils.ToStringSlice(value); err != nil {
+		return HostValue{}, err
+	} else {
+		if len(valueArr) > 1 {
 			isDomain = false
-		} else {
-			domain = host
-		}
-	default: // > 1
-		isDomain = false
-		for _, str := range value {
-			if ip, err := netip.ParseAddr(str); err == nil {
+			for _, str := range valueArr {
+				if ip, err := netip.ParseAddr(str); err == nil {
+					ips = append(ips, ip.Unmap())
+				} else {
+					return HostValue{}, err
+				}
+			}
+		} else if len(valueArr) == 1 {
+			host := valueArr[0]
+			if ip, err := netip.ParseAddr(host); err == nil {
 				ips = append(ips, ip.Unmap())
+				isDomain = false
 			} else {
-				return HostValue{}, err
+				domain = host
 			}
 		}
 	}
 	if isDomain {
 		return NewHostValueByDomain(domain)
+	} else {
+		return NewHostValueByIPs(ips)
 	}
-	return NewHostValueByIPs(ips)
 }
 
 func NewHostValueByIPs(ips []netip.Addr) (HostValue, error) {

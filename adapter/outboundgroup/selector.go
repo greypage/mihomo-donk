@@ -14,6 +14,8 @@ type Selector struct {
 	disableUDP bool
 	selected   string
 	testUrl    string
+	Hidden     bool
+	Icon       string
 }
 
 // DialContext implements C.ProxyAdapter
@@ -62,13 +64,12 @@ func (s *Selector) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(map[string]any{
-		"type":          s.Type().String(),
-		"now":           s.Now(),
-		"all":           all,
-		"testUrl":       url,
-		"hidden":        s.Hidden(),
-		"icon":          s.Icon(),
-		"emptyFallback": s.EmptyFallback().Name(),
+		"type":    s.Type().String(),
+		"now":     s.Now(),
+		"all":     all,
+		"testUrl": url,
+		"hidden":  s.Hidden,
+		"icon":    s.Icon,
 	})
 }
 
@@ -115,23 +116,22 @@ func (s *Selector) Proxies() []C.Proxy {
 	return s.GetProxies(false)
 }
 
-func NewSelector(option *GroupCommonOption, emptyFallback C.Proxy, providers []P.ProxyProvider) *Selector {
+func NewSelector(option *GroupCommonOption, providers []P.ProxyProvider) *Selector {
 	return &Selector{
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
 			Type:           C.Selector,
-			Hidden:         option.Hidden,
-			Icon:           option.Icon,
 			Filter:         option.Filter,
 			ExcludeFilter:  option.ExcludeFilter,
 			ExcludeType:    option.ExcludeType,
 			TestTimeout:    option.TestTimeout,
 			MaxFailedTimes: option.MaxFailedTimes,
-			EmptyFallback:  emptyFallback,
 			Providers:      providers,
 		}),
-		selected:   emptyFallback.Name(),
+		selected:   "COMPATIBLE",
 		disableUDP: option.DisableUDP,
 		testUrl:    option.URL,
+		Hidden:     option.Hidden,
+		Icon:       option.Icon,
 	}
 }

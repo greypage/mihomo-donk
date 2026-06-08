@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/metacubex/blake3"
 	"github.com/metacubex/mihomo/common/pool"
 	"github.com/metacubex/mihomo/transport/shadowsocks/shadowaead"
 	"github.com/metacubex/mihomo/transport/socks5"
@@ -40,6 +41,11 @@ const (
 	Version byte = 1
 )
 
+const (
+	IdentityHeaderLength = 16
+	identityWireMagic    = "DLSNID01"
+)
+
 var endSignal = []byte{}
 
 type packetFrameWriter interface {
@@ -63,7 +69,6 @@ func (s *Snell) ReadReply() error {
 	if s.reply {
 		return nil
 	}
-
 	if _, err := io.ReadFull(s.Conn, s.buffer[:]); err != nil {
 		return err
 	}
@@ -96,6 +101,14 @@ func (s *Snell) ReadReply() error {
 	return fmt.Errorf("server reported code: %d, message: %s", errcode, string(msg))
 }
 
+func ReadTunnelReply(conn net.Conn) error {
+	snellConn, ok := conn.(*Snell)
+	if !ok {
+		return nil
+	}
+	return snellConn.ReadReply()
+}
+
 func WriteHeader(conn net.Conn, host string, port uint, version int) error {
 	return WriteHeaderWithReuse(conn, host, port, version, false)
 }
@@ -104,7 +117,7 @@ func WriteHeaderWithReuse(conn net.Conn, host string, port uint, version int, re
 	buf := pool.GetBuffer()
 	defer pool.PutBuffer(buf)
 	buf.WriteByte(Version)
-	if version == Version2 || reuse {
+	if version == Version2 || (version >= Version4 && reuse) {
 		buf.WriteByte(CommandConnectV2)
 	} else {
 		buf.WriteByte(CommandConnect)
@@ -135,42 +148,41 @@ func WriteUDPHeader(conn net.Conn, version int) error {
 	return err
 }
 
-func writeZeroChunk(conn net.Conn) error {
+func HalfClose(conn net.Conn) error {
 	if _, err := conn.Write(endSignal); err != nil {
 		return err
 	}
-	return nil
-}
 
-// HalfClose only works after the request negotiated the reuse command.
-func HalfClose(conn net.Conn) error {
-	if err := writeZeroChunk(conn); err != nil {
-		return err
-	}
 	if s, ok := conn.(*Snell); ok {
 		s.reply = false
 	}
 	return nil
 }
 
-func StreamConn(conn net.Conn, psk []byte, version int) *Snell {
-	if version >= Version4 {
-		return &Snell{Conn: newV4Conn(conn, psk)}
-	}
+func IdentityHeaderFromPSK(psk []byte) []byte {
+	hash := blake3.Sum512(psk)
+	return append([]byte(nil), hash[:IdentityHeaderLength]...)
+}
 
+func StreamConnWithIdentity(conn net.Conn, psk []byte, version int) *Snell {
+	return streamConn(conn, psk, version, IdentityHeaderFromPSK(psk))
+}
+
+func StreamConn(conn net.Conn, psk []byte, version int) *Snell {
+	return streamConn(conn, psk, version, nil)
+}
+
+func streamConn(conn net.Conn, psk []byte, version int, identity []byte) *Snell {
 	var cipher shadowaead.Cipher
 	if version != Version1 {
 		cipher = NewAES128GCM(psk)
 	} else {
 		cipher = NewChacha20Poly1305(psk)
 	}
+	if version == Version4 {
+		return &Snell{Conn: newV4Conn(conn, cipher, identity)}
+	}
 	return &Snell{Conn: shadowaead.NewConn(conn, cipher)}
-}
-
-func ServerStreamConn(conn net.Conn, psk []byte, version int) *Snell {
-	stream := StreamConn(conn, psk, version)
-	stream.reply = true
-	return stream
 }
 
 func PacketConn(conn net.Conn) net.PacketConn {
@@ -293,7 +305,7 @@ func ParseUDPRequest(packet []byte) (UDPRequest, error) {
 		return UDPRequest{}, errors.New("snell invalid UDP request")
 	}
 	if hostLen := int(packet[1]); hostLen != 0 {
-		if len(packet) <= 2+hostLen+2 {
+		if len(packet) < 2+hostLen+2 {
 			return UDPRequest{}, errors.New("snell invalid UDP domain request")
 		}
 		offset := 2 + hostLen

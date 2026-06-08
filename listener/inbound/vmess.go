@@ -26,7 +26,7 @@ type VmessOption struct {
 type VmessUser struct {
 	Username string `inbound:"username,omitempty"`
 	UUID     string `inbound:"uuid"`
-	AlterID  int    `inbound:"alterId,omitempty"`
+	AlterID  int    `inbound:"alterId"`
 }
 
 func (o VmessOption) Equal(config C.InboundConfig) bool {

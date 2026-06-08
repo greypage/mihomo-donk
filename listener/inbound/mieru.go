@@ -14,7 +14,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	mieruserver "github.com/enfein/mieru/v3/apis/server"
-	mierutp "github.com/enfein/mieru/v3/apis/trafficpattern"
 	mierupb "github.com/enfein/mieru/v3/pkg/appctl/appctlpb"
 )
 
@@ -27,10 +26,8 @@ type Mieru struct {
 
 type MieruOption struct {
 	BaseOption
-	Transport           string            `inbound:"transport"`
-	Users               map[string]string `inbound:"users"`
-	TrafficPattern      string            `inbound:"traffic-pattern,omitempty"`
-	UserHintIsMandatory bool              `inbound:"user-hint-is-mandatory,omitempty"`
+	Transport string            `inbound:"transport"`
+	Users     map[string]string `inbound:"users"`
 }
 
 type mieruListenerFactory struct{}
@@ -157,20 +154,10 @@ func buildMieruServerConfig(option *MieruOption, ports utils.IntRanges[uint16]) 
 			Password: proto.String(password),
 		})
 	}
-	var trafficPattern *mierupb.TrafficPattern
-	trafficPattern, _ = mierutp.Decode(option.TrafficPattern)
-	var advancedSettings *mierupb.ServerAdvancedSettings
-	if option.UserHintIsMandatory {
-		advancedSettings = &mierupb.ServerAdvancedSettings{
-			UserHintIsMandatory: proto.Bool(true),
-		}
-	}
 	return &mieruserver.ServerConfig{
 		Config: &mierupb.ServerConfig{
-			PortBindings:     portBindings,
-			Users:            users,
-			TrafficPattern:   trafficPattern,
-			AdvancedSettings: advancedSettings,
+			PortBindings: portBindings,
+			Users:        users,
 		},
 		StreamListenerFactory: mieruListenerFactory{},
 		PacketListenerFactory: mieruListenerFactory{},
@@ -190,15 +177,6 @@ func validateMieruOption(option *MieruOption) error {
 		}
 		if password == "" {
 			return fmt.Errorf("password is empty")
-		}
-	}
-	if option.TrafficPattern != "" {
-		trafficPattern, err := mierutp.Decode(option.TrafficPattern)
-		if err != nil {
-			return fmt.Errorf("failed to decode traffic pattern %q: %w", option.TrafficPattern, err)
-		}
-		if err := mierutp.Validate(trafficPattern); err != nil {
-			return fmt.Errorf("invalid traffic pattern %q: %w", option.TrafficPattern, err)
 		}
 	}
 	return nil
