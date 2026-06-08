@@ -7,7 +7,7 @@ import (
 	"syscall"
 
 	"github.com/metacubex/mihomo/constant"
-	_ "github.com/metacubex/mihomo/hub"
+	"github.com/metacubex/mihomo/hub"
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
 )
@@ -38,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	executor.ApplyConfig(cfg, false)
+	hub.ApplyConfig(cfg)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
