@@ -88,8 +88,8 @@ jobs:
             -o ./bin/clash
           chmod +x ./bin/clash
           ${upx} ${{ matrix.upxflag }} ./bin/clash || true
-          mkdir -p ../build_output
-          tar -zcvf ../build_output/clash-linux-${{ matrix.output }}.tar.gz -C ./bin clash
+          mkdir -p build_output
+          tar -zcvf build_output/clash-linux-${{ matrix.output }}.tar.gz -C ./bin clash
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
