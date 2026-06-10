@@ -102,4 +102,47 @@ jobs:
           name: core-${{ matrix.output }}
           path: build_output/clash-linux-${{ matrix.output }}.tar.gz
 
+  Upload-Release:
+    permissions: write-all
+    needs: [Build]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bin/
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd bin/
+          find . -type f | sort | xargs sha256sum > checksums.txt
+          cat checksums.txt
+
+      - name: Delete old release assets
+        uses: 8Mi-Tech/delete-release-assets-action@main
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: Prerelease-Alpha
+          deleteOnlyFromDrafts: false
+
+      - name: Update release tag
+        uses: richardsimko/update-tag@v1
+        with:
+          tag_name: Prerelease-Alpha
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: Prerelease-Alpha
+          files: bin/*
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            Mihomo core build from Alpha branch.
+            构建时间: ${{ github.event.head_commit.timestamp }}
+
 
