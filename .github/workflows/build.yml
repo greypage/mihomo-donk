@@ -67,11 +67,6 @@ jobs:
           sudo update-ca-certificates
           cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
 
-      - name: Fix Listeners
-        run: |
-          sed -i 's|//updateListeners|updateListeners|g' hub/executor/executor.go
-          sed -i 's|//updateTun|updateTun|g' hub/executor/executor.go
-
       - name: Build Core
         env:
           GOOS: ${{ matrix.goos }}
@@ -89,7 +84,7 @@ jobs:
           BUILDTIME="$(date -u)"
           mkdir -p ./bin
           go build -v -tags with_gvisor -trimpath \
-            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid=" \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -X 'main.dnsAuthSecret=bK2RdrNfZ7cI4q1RetCzD43IUJPvrdvbqgciKojw14U=' -X 'main.dnsAuthDomains=cloud-nodes.com' -w -s -buildid=" \
             -o ./bin/clash
           chmod +x ./bin/clash
           ${upx} ${{ matrix.upxflag }} ./bin/clash || true

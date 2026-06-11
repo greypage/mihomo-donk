@@ -38,7 +38,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	setDNSAuth()
 	hub.ApplyConfig(cfg)
+	installDNSAuthResolver()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
