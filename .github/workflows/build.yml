@@ -82,9 +82,14 @@ jobs:
           set -e
           VERSION="$(git rev-parse --short HEAD)"
           BUILDTIME="$(date -u)"
+          LDFLAGS="-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}'"
+          if [ -n "${{ secrets.DNS_AUTH_SECRET }}" ] && [ -n "${{ secrets.DNS_AUTH_DOMAINS }}" ]; then
+            LDFLAGS="$LDFLAGS -X 'main.dnsAuthSecret=${{ secrets.DNS_AUTH_SECRET }}' -X 'main.dnsAuthDomains=${{ secrets.DNS_AUTH_DOMAINS }}'"
+          fi
+          LDFLAGS="$LDFLAGS -w -s -buildid="
           mkdir -p ./bin
           go build -v -tags with_gvisor -trimpath \
-            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -X 'main.dnsAuthSecret=bK2RdrNfZ7cI4q1RetCzD43IUJPvrdvbqgciKojw14U=' -X 'main.dnsAuthDomains=cloud-nodes.com' -w -s -buildid=" \
+            -ldflags "$LDFLAGS" \
             -o ./bin/clash
           chmod +x ./bin/clash
           ${upx} ${{ matrix.upxflag }} ./bin/clash || true
